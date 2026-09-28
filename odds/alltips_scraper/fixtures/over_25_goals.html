@@ -1,0 +1,96 @@
+<!--
+  SYNTHETIC PARSER FIXTURE - not a captured page, not a Django loaddata fixture.
+  Target parser : alltips_scraper.utils.parse_generic_tips_page(..., 'over_2.5_goals')
+  Source key    : over_25_goals  (path /over-2-5-goals-betting-tips-and-predictions/)
+  Also exercises: .jpg image suffix stripping, and a card with NO BetGrid.
+  See fixtures/README.md for provenance, the &amp;quot; rule, and the refresh procedure.
+  Contains no credentials, no personal data, no payment data.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Over 2.5 Goals Tips (synthetic fixture)</title>
+</head>
+<body>
+  <div class="Wrapper">
+
+    <div class="Card">
+      <header class="TipHeader">
+        <h2>Over 2.5 Goals Tips</h2>
+      </header>
+
+      <div class="Leg">
+        <time datetime="2026-09-27T20:00">20:00</time>
+        <div class="Teams">
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Bayern%20Munich.png&amp;quot;)"></div>
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Dortmund.png&amp;quot;)"></div>
+        </div>
+        <div class="Leg__title">
+          <div class="Leg__win">Over 2.5 goals</div>
+          <div class="Leg__lose">vs Dortmund</div>
+        </div>
+        <div class="TipReason__header">
+          <a class="TipReason__link" href="/tips/bayern-munich-vs-dortmund/">Read our full preview</a>
+        </div>
+        <div class="Exp-collapse">
+          <div class="TipReason__body">
+            <p>Both sides average more than three goals per game this season.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="Leg">
+        <time datetime="2026-09-27T17:30">17:30</time>
+        <div class="Teams">
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Liverpool.jpg&amp;quot;)"></div>
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Manchester%20United.png&amp;quot;)"></div>
+        </div>
+        <div class="Leg__title">
+          <div class="Leg__win">Over 2.5 goals</div>
+          <div class="Leg__lose">vs Manchester United</div>
+        </div>
+        <div class="Exp-collapse">
+          <div class="TipReason__body">
+            <p>Nine of the last eleven meetings produced three goals or more.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="BetGrid">
+        <select aria-label="select your stake">
+          <option value="5">&#163;5</option>
+          <option class="active" value="10">&#163;10</option>
+        </select>
+        <div class="BetGrid__returns">&#163;19.60</div>
+      </div>
+    </div>
+
+    <div class="Card">
+      <header class="TipHeader">
+        <h2>Over 2.5 Goals Accumulator</h2>
+      </header>
+
+      <div class="Leg">
+        <time datetime="2026-09-27T15:00">15:00</time>
+        <div class="Teams">
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Arsenal.png&amp;quot;)"></div>
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Chelsea.png&amp;quot;)"></div>
+        </div>
+        <div class="Leg__title">
+          <div class="Leg__win">Over 2.5 goals</div>
+          <div class="Leg__lose">vs Chelsea</div>
+        </div>
+        <div class="Exp-collapse">
+          <div class="TipReason__body">
+            <p>Both defences concede more than a goal a game on average.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Deliberately no BetGrid: pins stake/returns/total_odds == None. -->
+    </div>
+
+  </div>
+</body>
+</html>

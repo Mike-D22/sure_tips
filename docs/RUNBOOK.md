@@ -83,8 +83,11 @@ key.
 * TTL: 14,400 s (4 h), unchanged from the original implementation.
 * Backend: Django's default `LocMemCache` (per process — restarting the server or
   running extra workers gives each process its own cache).
-* The key includes the local date, so yesterday's tips can never be served today
-  and no manual flush is needed at midnight.
+* The key includes the date resolved in `TIME_ZONE` (`UTC`), so yesterday's tips
+  can never be served today and no manual flush is needed at midnight. This is an
+  internal cache key, **not** a user-facing date boundary: client-facing date
+  filtering must pass an explicit user timezone
+  (`docs/DATA_CONTRACT.md` §13.7–13.8).
 * To clear the cache during development:
 
 ```powershell
@@ -119,15 +122,24 @@ Generate a secret key with:
 ```powershell
 .\.venv\Scripts\python.exe .\odds\manage.py check                              # expect: no issues
 .\.venv\Scripts\python.exe .\odds\manage.py migrate                            # currently: no migrations to apply
-.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 8 tests
+.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 89 tests, all passing
 ```
 
 The app label is required. `odds/` is not a Python package, so a bare
 `manage.py test` runs Django's discovery against the repository root, finds
 **0 tests** and prints `NO TESTS RAN`.
 
-The tests mock every scraper, so they are safe to run offline and never touch
-`freesupertips.com`. One of them,
+The suite runs **entirely offline**: `tests.py` mocks every scraper handler;
+`tests_parser_contract.py` calls the real parser functions against the static,
+synthetic HTML in `odds/alltips_scraper/fixtures/` (read with `Path.read_bytes`);
+and `tests_offline_guard.py` disables the socket layer for every test and proves
+the fetch path fails closed with an error envelope instead of raising. Nothing
+touches `freesupertips.com` or any other host, and no test refreshes or
+regenerates a fixture. The contract these tests pin is documented in
+`docs/DATA_CONTRACT.md`; fixture provenance and the refresh procedure live in
+`odds/alltips_scraper/fixtures/README.md`.
+
+One of them,
 `LegacyCacheContractTests.test_cache_keys_are_namespaced_per_view`, is
 time-of-day sensitive: see section 4.3 of `docs/AUDIT.md`.
 
@@ -160,6 +172,15 @@ Never log `SECRET_KEY`, SMTP credentials, or `SCRAPE_URL` values.
   `myvenv/`, `__pycache__/`, `*.pyc`, `odds/db.sqlite3` or any `.env` file —
   all are covered by the root `.gitignore` and `odds/.gitignore`.
   `.env.example` **is** tracked (it is documentation).
+* Parser fixtures in `odds/alltips_scraper/fixtures/` are **static, synthetic,
+  test-only** HTML. They are not Django `loaddata` fixtures and must not be
+  regenerated, fetched, or refreshed by a test. Never write `SCRAPE_URL`, a host,
+  or any credential into a fixture. See `fixtures/README.md` and
+  `docs/DATA_CONTRACT.md`.
+* Note the spelling difference: `odds/alltips_scraper/tests.py` holds the legacy
+  cache/health tests, while `tests_parser_contract.py` and
+  `tests_offline_guard.py` hold the Sprint 1B parser tests. Do not add a `tests`
+  package next to `tests.py`.
 * Always call Django through the repository-root interpreter
   (`.\.venv\Scripts\python.exe .\odds\manage.py <command>`); the project virtual
   environment lives at the repository root, not inside `odds/`.

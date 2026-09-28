@@ -1,0 +1,67 @@
+<!--
+  SYNTHETIC PARSER FIXTURE - not a captured page, not a Django loaddata fixture.
+  Target parser : alltips_scraper.utils.parse_leg (via parse_card)
+  Purpose       : pins what the CURRENT parser does with a PARTIALLY broken card.
+                  Leg 1 is complete. Leg 2 is a completely empty div.Leg. Leg 3 has
+                  a time and an opponent but no prediction. None of these raise, so
+                  all three become matches - gaps and all. See docs/DATA_CONTRACT.md.
+  See fixtures/README.md for provenance and the refresh procedure.
+  Contains no credentials, no personal data, no payment data.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Malformed legs (synthetic fixture)</title>
+</head>
+<body>
+  <div class="Wrapper">
+
+    <div class="Card">
+      <header class="TipHeader">
+        <h2>Mixed Legs</h2>
+      </header>
+
+      <div class="Leg">
+        <time datetime="2026-09-27T19:45">19:45</time>
+        <div class="Teams">
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Liverpool.png&amp;quot;)"></div>
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Manchester%20United.png&amp;quot;)"></div>
+        </div>
+        <div class="Leg__title">
+          <div class="Leg__win">Liverpool to win</div>
+          <div class="Leg__lose">vs Manchester United</div>
+        </div>
+        <div class="TipReason__header">
+          <a class="TipReason__link" href="/tips/liverpool-vs-manchester-united/">Read our full preview</a>
+        </div>
+        <div class="Exp-collapse">
+          <div class="TipReason__body">
+            <p>Liverpool are unbeaten at home in their last eleven league games.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Leg 2: completely empty. Every field must come back as an empty string/list. -->
+      <div class="Leg"></div>
+
+      <!-- Leg 3: a kick-off time and an opponent, but no prediction at all. -->
+      <div class="Leg">
+        <time datetime="2026-09-27T21:00">21:00</time>
+        <div class="Teams"></div>
+        <div class="Leg__title">
+          <div class="Leg__lose">vs Everton</div>
+        </div>
+      </div>
+
+      <div class="BetGrid">
+        <select aria-label="select your stake">
+          <option class="active" value="10">&#163;10</option>
+        </select>
+        <div class="BetGrid__returns">&#163;30.00</div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!--
+  SYNTHETIC PARSER FIXTURE - not a captured page, not a Django loaddata fixture.
+  Target parser : alltips_scraper.utils.parse_card (via the page parsers)
+  Purpose       : one card has an unparseable option.active stake value, which makes
+                  parse_card raise on float() and discard the WHOLE card, including
+                  its otherwise-valid legs. The sibling card must survive untouched.
+  See fixtures/README.md for provenance and the refresh procedure.
+  Contains no credentials, no personal data, no payment data.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Malformed card (synthetic fixture)</title>
+</head>
+<body>
+  <div class="Wrapper">
+
+    <div class="Card">
+      <header class="TipHeader">
+        <h2>Broken Card</h2>
+      </header>
+
+      <div class="Leg">
+        <time datetime="2026-09-27T19:45">19:45</time>
+        <div class="Teams">
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Liverpool.png&amp;quot;)"></div>
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Manchester%20United.png&amp;quot;)"></div>
+        </div>
+        <div class="Leg__title">
+          <div class="Leg__win">Liverpool to win</div>
+          <div class="Leg__lose">vs Manchester United</div>
+        </div>
+      </div>
+
+      <div class="BetGrid">
+        <select aria-label="select your stake">
+          <option class="active" value="not-a-number">&#163;??</option>
+        </select>
+        <div class="BetGrid__returns">&#163;99.00</div>
+      </div>
+    </div>
+
+    <div class="Card">
+      <header class="TipHeader">
+        <h2>Working Card</h2>
+      </header>
+
+      <div class="Leg">
+        <time datetime="2026-09-27T15:00">15:00</time>
+        <div class="Teams">
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Arsenal.png&amp;quot;)"></div>
+          <div class="Img Team Team--xs" style="background-image:url(&amp;quot;/wp-content/themes/freesupertips/image/team/Chelsea.png&amp;quot;)"></div>
+        </div>
+        <div class="Leg__title">
+          <div class="Leg__win">Arsenal to win</div>
+          <div class="Leg__lose">vs Chelsea</div>
+        </div>
+      </div>
+
+      <div class="BetGrid">
+        <select aria-label="select your stake">
+          <option class="active" value="10">&#163;10</option>
+        </select>
+        <div class="BetGrid__returns">&#163;20.00</div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

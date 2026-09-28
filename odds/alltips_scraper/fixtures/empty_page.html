@@ -1,0 +1,24 @@
+<!--
+  SYNTHETIC PARSER FIXTURE - not a captured page, not a Django loaddata fixture.
+  Target parsers: all three page parsers, for the "no cards" error envelope.
+  See fixtures/README.md for provenance and the refresh procedure.
+  Contains no credentials, no personal data, no payment data.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>No tips today (synthetic fixture)</title>
+</head>
+<body>
+  <div class="Wrapper">
+    <header class="TipHeader">
+      <h1>Today's Tips</h1>
+    </header>
+    <div class="Notice">
+      <p>There are no tips published yet today. Please check back later.</p>
+    </div>
+    <!-- No div.Card anywhere on this page: parsers must return their error envelope. -->
+  </div>
+</body>
+</html>

@@ -1,0 +1,50 @@
+<!--
+  SYNTHETIC PARSER FIXTURE - not a captured page, not a Django loaddata fixture.
+  Target parser : alltips_scraper.utils.extract_team_from_style (via parse_leg)
+  Purpose       : the style attribute below uses SINGLE escaping (&quot;), which is how
+                  the markup looks in raw source. BeautifulSoup decodes character
+                  references inside attribute values, so the parser's regex
+                  background-image:url\(&quot;...&quot;\) no longer matches and NO team is
+                  extracted from the images. Only the "vs Everton" opponent text
+                  survives, and match_title therefore falls back to the prediction.
+                  Team extraction only works when the parsed attribute still contains
+                  a literal &quot; (i.e. double-escaped &amp;quot; in source).
+  See fixtures/README.md and docs/DATA_CONTRACT.md for the full explanation.
+  Contains no credentials, no personal data, no payment data.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Single-escaped team style (synthetic fixture)</title>
+</head>
+<body>
+  <div class="Wrapper">
+
+    <div class="Card">
+      <header class="TipHeader">
+        <h2>Single Escaped</h2>
+      </header>
+
+      <div class="Leg">
+        <time datetime="2026-09-27T19:45">19:45</time>
+        <div class="Teams">
+          <div class="Img Team Team--xs" style="background-image:url(&quot;/wp-content/themes/freesupertips/image/team/Liverpool.png&quot;)"></div>
+        </div>
+        <div class="Leg__title">
+          <div class="Leg__win">Liverpool to win</div>
+          <div class="Leg__lose">vs Everton</div>
+        </div>
+      </div>
+
+      <div class="BetGrid">
+        <select aria-label="select your stake">
+          <option class="active" value="10">&#163;10</option>
+        </select>
+        <div class="BetGrid__returns">&#163;18.00</div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

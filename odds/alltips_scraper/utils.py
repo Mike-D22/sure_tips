@@ -26,6 +26,22 @@ def extract_team_from_style(style_str: str) -> str:
     return ""
 
 
+def resolve_source_date(injected_date: str | None = None) -> str:
+    """Return the date stamp the page parsers attach to their payloads.
+
+    The stamp is *source/date-display* information for the day the page was
+    read. It is NOT an official fixture date and must never be presented as one.
+
+    ``injected_date`` exists so callers (parser contract tests today, future
+    ingestion jobs later) can pin the value and get identical output on any
+    machine and at any wall-clock time. When it is omitted the legacy behaviour
+    is preserved exactly: ``datetime.now()`` formatted as ``YYYY-MM-DD``.
+    """
+    if injected_date is not None:
+        return injected_date
+    return datetime.now().strftime('%Y-%m-%d')
+
+
 def parse_leg(leg_div, date_text: str = "") -> dict | None:
     """
     Extract match data from a single Leg div.
@@ -168,15 +184,18 @@ def parse_card(card_div, default_date: str = "") -> dict:
         logger.warning("Error parsing card: %s", e)
         return {'tip_category': '', 'matches': [], 'count': 0}
 
-def parse_bet_of_the_day_page(html: bytes) -> dict:
+def parse_bet_of_the_day_page(html: bytes, current_date: str | None = None) -> dict:
     """
     Parse the Bet of the Day page (multiple tips from different tipsters).
     URL: /bet-of-the-day-tips/
+
+    ``current_date`` is an optional date injection used by the parser contract
+    tests. The legacy call path passes nothing and keeps the current local date.
     """
     soup = BeautifulSoup(html, 'html.parser')
     
-    # Get current date
-    current_date = datetime.now().strftime('%Y-%m-%d')
+    # Get current date (source/date-display stamp only)
+    current_date = resolve_source_date(current_date)
     
     # Find ALL Card divs (multiple tips on the page)
     cards = soup.find_all('div', class_='Card')
@@ -223,14 +242,17 @@ def parse_bet_of_the_day_page(html: bytes) -> dict:
         'source': 'freesupertips'
     }
 
-def parse_accumulator_page(html: bytes) -> dict:
+def parse_accumulator_page(html: bytes, current_date: str | None = None) -> dict:
     """
     Parse Accumulator Tips page (multiple tips per card).
     URL: /accumulator-tips/
     Returns each accumulator category as a separate object with its matches and odds.
+
+    ``current_date`` is an optional date injection used by the parser contract
+    tests. The legacy call path passes nothing and keeps the current local date.
     """
     soup = BeautifulSoup(html, 'html.parser')
-    current_date = datetime.now().strftime('%Y-%m-%d')
+    current_date = resolve_source_date(current_date)
     
     # Find all Card divs (each card is an accumulator category)
     cards = soup.find_all('div', class_='Card')
@@ -266,14 +288,17 @@ def parse_accumulator_page(html: bytes) -> dict:
         'source': 'freesupertips'
     }
 
-def parse_generic_tips_page(html: bytes, tip_type: str) -> dict:
+def parse_generic_tips_page(html: bytes, tip_type: str, current_date: str | None = None) -> dict:
     """
     Generic parser for pages with multiple tips.
     Handles: over-2-5-goals, both-teams-to-score, btts-and-win, anytime-goalscorer
     Each page can have multiple accumulator cards, each with its own odds.
+
+    ``current_date`` is an optional date injection used by the parser contract
+    tests. The legacy call path passes nothing and keeps the current local date.
     """
     soup = BeautifulSoup(html, 'html.parser')
-    current_date = datetime.now().strftime('%Y-%m-%d')
+    current_date = resolve_source_date(current_date)
     
     # Find all Card divs (each card is an accumulator/tip category)
     cards = soup.find_all('div', class_='Card')
