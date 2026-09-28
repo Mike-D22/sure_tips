@@ -370,5 +370,3 @@ odds/.gitignore:11:.venv/           odds/.venv         <- ignored
   terms **Free** / **Premium** (never VIP). The *implementation* of pricing,
   subscriptions, payments, entitlements, and result settlement remains future
   work and does not block this sprint.
-
-
