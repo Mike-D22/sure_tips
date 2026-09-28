@@ -1,0 +1,46 @@
+# Repository-level ignores.
+# Flutter/mobile and deployment artifacts are listed as placeholders so later
+# sprints cannot accidentally commit build output.
+
+# --- Python / virtualenvs --------------------------------------------------
+myvenv/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Secrets / environment -------------------------------------------------
+.env
+.env.*
+!**/.env.example
+
+# --- Django runtime artifacts (local only) ---------------------------------
+*.sqlite3
+*.sqlite3-journal
+*.log
+staticfiles/
+media/
+
+# --- Editors / IDEs --------------------------------------------------------
+.vscode/
+.idea/
+.vs/
+*.swp
+
+# --- Archives / scratch ----------------------------------------------------
+*.zip
+*.tar.gz
+tmp/
+scratch/
+
+# --- Flutter / Dart build output (placeholder for mobile work) -------------
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
