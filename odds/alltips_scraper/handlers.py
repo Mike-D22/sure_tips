@@ -6,11 +6,17 @@ from .utils import (
     Over25GoalsScraper,
     BTTSAndWinScraper,
 )
-import os
+import logging
 from datetime import datetime
 
-ENABLE_VERIFICATION = os.getenv('FREESUPERTIPS_ENABLE_VERIFICATION', 'False').lower() == 'true'
-print(f"[DEBUG] FREESUPERTIPS_ENABLE_VERIFICATION = {ENABLE_VERIFICATION}")
+from decouple import config
+
+logger = logging.getLogger(__name__)
+
+# Result/settlement verification is not implemented yet (Soccerbase integration
+# is pending), so it stays disabled unless explicitly enabled in the environment.
+# The value itself is never logged.
+ENABLE_VERIFICATION = config('FREESUPERTIPS_ENABLE_VERIFICATION', default=False, cast=bool)
 
 
 def get_bet_of_the_day():
@@ -41,10 +47,13 @@ def get_over_25_goals_accumulator():
     data = scraper.scrape_over_25_goals()
     
     if ENABLE_VERIFICATION and data.get('matches') and not data.get('error'):
-        print(f"[DEBUG] Verification is ENABLED for {len(data['matches'])} matches")
+        logger.debug("Verification enabled for over/under 2.5 goals tips")
         data = _verify_predictions(data, 'over_25')
     else:
-        print(f"[DEBUG] Verification is DISABLED or no matches")
+        logger.debug(
+            "Verification skipped for over/under 2.5 goals tips "
+            "(disabled, no matches, or error payload)"
+        )
     
     return data
 

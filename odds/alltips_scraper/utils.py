@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import aiohttp
 import cloudscraper
 from bs4 import BeautifulSoup
@@ -7,6 +8,8 @@ from decouple import config
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import re
+
+logger = logging.getLogger(__name__)
 
 API_BASE_URL = config('SCRAPE_URL')
 
@@ -97,7 +100,7 @@ def parse_leg(leg_div, date_text: str = "") -> dict | None:
             'match_url': match_url,
         }
     except Exception as e:
-        print(f"Error extracting match from leg: {e}")
+        logger.warning("Error extracting match from leg: %s", e)
         return None
 
 
@@ -162,7 +165,7 @@ def parse_card(card_div, default_date: str = "") -> dict:
             'count': len(matches)
         }
     except Exception as e:
-        print(f"Error parsing card: {e}")
+        logger.warning("Error parsing card: %s", e)
         return {'tip_category': '', 'matches': [], 'count': 0}
 
 def parse_bet_of_the_day_page(html: bytes) -> dict:

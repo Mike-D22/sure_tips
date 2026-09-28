@@ -9,12 +9,19 @@ from alltips_scraper.views import (
     btts_win_accumulator,
     over_25_goals_accumulator,
     both_teams_to_score,
+    # Operational endpoints
+    health,
 )
 
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    
+
+    # ==========================================================
+    # Operational endpoint (no scraping, no auth, no secrets)
+    # ==========================================================
+    path('api/health/', health, name='health'),
+
     # ==========================================================
     # Original AllTips Scraper Endpoints
     # ==========================================================

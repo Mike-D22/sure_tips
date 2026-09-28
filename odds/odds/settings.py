@@ -1,6 +1,6 @@
 
 from pathlib import Path
-from decouple import config
+from decouple import Csv, config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -13,14 +13,24 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Defaults to False, so a missing or mistyped environment variable can never
+# enable debug mode in a deployed environment. Local development opts in with
+# DEBUG=True in odds/.env.
+DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = ["*"]
+# Comma-separated list of hosts. Defaults to local development hosts only;
+# a wildcard is deliberately not the default.
+ALLOWED_HOSTS = config(
+    'ALLOWED_HOSTS',
+    default='localhost,127.0.0.1,[::1]',
+    cast=Csv(),
+)
 
 
 # Application definition
 
 INSTALLED_APPS = [
+    'corsheaders',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -41,12 +51,20 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
-CORS_ALLOWED_ORIGINS = [
-    "http://127.0.0.1:8000",
-    # "http://localhost:50083",
-]
+# CORS ----------------------------------------------------------------------
+# Wildcard CORS is opt-in and local-development only (CORS_ALLOW_ALL_ORIGINS=True
+# in a local odds/.env). It is never the default configuration, because it lets
+# any browser origin read the API.
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)
 
+# Explicit origins are only consulted while the wildcard is off.
+CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else config(
+    'CORS_ALLOWED_ORIGINS',
+    default='http://localhost:8000,http://127.0.0.1:8000',
+    cast=Csv(),
+)
+
+# Local development ports only; these never match a deployed origin.
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://localhost:\d+$",    # Any localhost port
     r"^http://127\.0\.0\.1:\d+$", # Any 127.0.0.1 port
@@ -127,3 +145,35 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+
+# Logging ---------------------------------------------------------------------
+# Console only. Scraper modules log via logging.getLogger(__name__); never log
+# SECRET_KEY, SMTP credentials, or any other environment value.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '{asctime} {levelname} {name} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'standard',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': config('DJANGO_LOG_LEVEL', default='INFO'),
+    },
+    'loggers': {
+        'alltips_scraper': {
+            'handlers': ['console'],
+            'level': config('ALLTIPS_LOG_LEVEL', default='INFO'),
+            'propagate': False,
+        },
+    },
+}

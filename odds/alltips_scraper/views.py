@@ -46,3 +46,17 @@ def anytime_goalscorer(request):
     result = get_anytime_goalscorer()
     return JsonResponse(result)
 
+
+def health(request):
+    """Liveness probe for the odds service.
+
+    Deliberately dependency-free: it does not scrape, does not touch the
+    database or the response cache, requires no authentication, and never
+    echoes configuration, environment values or filesystem paths.
+    """
+    return JsonResponse({
+        'status': 'ok',
+        'service': 'sure-tips-api',
+        'api_version': 'legacy',
+    })
+
