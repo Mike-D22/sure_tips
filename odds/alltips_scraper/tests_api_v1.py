@@ -1,4 +1,4 @@
-"""Pure mapping tests for the versioned tips serializers (``serializers_v1``).
+"""Pure mapping and snapshot-seam tests for the versioned tips API.
 
 Why this module exists
 ----------------------
@@ -13,12 +13,18 @@ before any view exists — the serializers are the only thing that decides the
 public shape, and a rename is exactly the kind of change that is invisible until
 it breaks a client.
 
+The snapshot seam (``readmodel_v1``) is pinned here for the same reason: it is
+what decides whether a snapshot's timestamp is a ``datetime`` or text, and whether
+stored state can be changed from outside the store. Both are invisible until a
+later provider or a client is built on the wrong answer, and both are cheap to
+pin while the store still has no other caller.
+
 Ground rules
 ------------
-* **No network, no database.** Every test is a pure function call on a
-  ``SimpleTestCase``; nothing here can fetch, and nothing here writes.
-* **No snapshot store, no view, no URL routing.** Those are the read model and
-  the endpoint, and they are not in this module's scope.
+* **No network, no database, no endpoint.** Every test is a pure call on a
+  ``SimpleTestCase``, or a call through the process-local default snapshot
+  provider; nothing here can fetch, nothing here writes, and no view, URL route,
+  or response is exercised. The endpoint and its routing are a later commit.
 * **No scraper import.** The payloads below are hand-written mirrors of the
   frozen parser envelopes, in the style of ``tests.py``, so this module imports
   neither the scraper module nor a fixture file. That is deliberate: the public
@@ -32,10 +38,17 @@ Ground rules
   format ``YYYY-MM-DDTHH:MM:SSZ`` is produced by ``serializers_v1.format_utc_z()``,
   which the timestamp tests below pin.
 
-Commit 1 scope
---------------
-This module currently covers ``serializers_v1`` only. Response status codes,
-query validation, snapshot storage, and the date-equality filter belong to later
+Commit scope
+------------
+Commit 1 covered ``serializers_v1``: the pure payload-to-envelope mapping. Commit
+2 adds the seam that mapping is published from — the framework-free snapshot
+store in ``readmodel_v1`` and its process-local default provider — and pins both
+halves of that one contract together here: the read model decides what a snapshot
+*is* (an opaque key, an unparsed payload, and an authoritative aware UTC
+``datetime``), and the serializers decide how it appears on the wire.
+
+Response status codes, query validation, the view and its URL route, the
+date-equality filter, and any durable or shared snapshot provider belong to later
 commits and are asserted there, not here.
 """
 
@@ -46,6 +59,17 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
+from . import readmodel_v1
+from .readmodel_v1 import (
+    SNAPSHOT_KEYS,
+    SNAPSHOT_SCHEMA_VERSION,
+    InMemorySnapshotProvider,
+    clear_snapshots,
+    get_snapshot_provider,
+    load_snapshot,
+    set_snapshot_provider,
+    store_snapshot,
+)
 from .serializers_v1 import (
     API_VERSION,
     CARD_UNIT_TIP_KEYS,
@@ -108,6 +132,39 @@ FORBIDDEN_V1_KEYS = frozenset({
     'free', 'premium', 'locked', 'preview', 'is_free', 'is_premium',
     'entitlement', 'access',
 })
+
+# ---------------------------------------------------------------------------
+# The read-model seam (``readmodel_v1``)
+# ---------------------------------------------------------------------------
+
+READMODEL_V1_PATH = Path(__file__).resolve().parent / 'readmodel_v1.py'
+
+# The read model may import these standard-library roots and nothing else.
+READMODEL_ALLOWED_IMPORT_ROOTS = frozenset({'copy', 'datetime', 'threading'})
+
+# The only four standalone names the read model may import: the deep copy, the
+# two datetime vocabulary names, and the lock.
+READMODEL_ALLOWED_IMPORTS = frozenset({
+    'copy.deepcopy', 'datetime.datetime', 'datetime.timezone', 'threading.Lock',
+})
+
+# Tokens that must not appear anywhere in the read-model source, comments and
+# docstrings included: a framework, a source fetch, an environment read, a wire
+# format, or a timestamp formatter.
+READMODEL_FORBIDDEN_SOURCE_TOKENS = (
+    'django', 'cloudscraper', 'requests', 'aiohttp', 'decouple', 'urllib',
+    'socket', 'http', 'getenv', 'os.environ', 'scrape', 'json', 'strftime',
+    'isoformat', 'strptime', 'fromisoformat', 'serializers', 'cache',
+)
+
+# Tokens that would turn the store into a second copy of the v1 tip-type
+# registry. A key is an opaque storage key, not a known type.
+READMODEL_FORBIDDEN_REGISTRY_TOKENS = (
+    'bet_of_the_day', 'daily_accumulator', 'over_25_goals',
+    'both_teams_to_score', 'btts_and_win', 'anytime_goalscorer',
+    'tip_type', 'SUPPORTED_TIP_TYPES', 'TIP_TYPE_UNITS', 'is_accumulator',
+    'unit_for',
+)
 
 # ---------------------------------------------------------------------------
 # Fixed inputs. Nothing below reads a clock or a fixture.
@@ -1210,3 +1267,496 @@ class StandardLibraryOnlyTests(SimpleTestCase):
         source = SERIALIZERS_V1_PATH.read_text(encoding='utf-8')
         self.assertIn('source_date_text is exactly a strict', source)
         self.assertIn('filter.available_date is null', source)
+
+
+# ---------------------------------------------------------------------------
+# The snapshot seam (``readmodel_v1``).
+# ---------------------------------------------------------------------------
+
+SNAPSHOT_RECORD_KEYS = {
+    'schema_version', 'type_key', 'payload', 'fetched_at',
+}
+
+
+class RecordingSnapshotProvider:
+    """A deliberate custom provider: it records what the seam delegates to it.
+
+    Deliberately permissive — it validates nothing, copies nothing, and keeps the
+    stamp it is handed verbatim — so a test can prove that the module-level seam
+    added no rule of its own on top of the default provider's policy.
+    """
+
+    def __init__(self):
+        self.calls = []
+        self.records = {}
+
+    def load(self, type_key):
+        self.calls.append(('load', type_key))
+        return self.records.get(type_key)
+
+    def store(self, type_key, payload, *, fetched_at=None):
+        self.calls.append(('store', type_key, payload, fetched_at))
+        record = {
+            'type_key': type_key,
+            'payload': payload,
+            'fetched_at': fetched_at,
+        }
+        self.records[type_key] = record
+        return record
+
+    def clear(self):
+        self.calls.append(('clear',))
+        self.records.clear()
+
+
+class ProviderWithoutACallableLoad:
+    """A provider candidate whose ``load`` attribute cannot be delegated to."""
+
+    load = None
+
+    def store(self, type_key, payload, *, fetched_at=None):
+        return None
+
+    def clear(self):
+        pass
+
+
+class ProviderWithoutClear:
+    """A provider candidate that exposes only two of the three methods."""
+
+    def load(self, type_key):
+        return None
+
+    def store(self, type_key, payload, *, fetched_at=None):
+        return None
+
+
+class SnapshotProviderTestCase(SimpleTestCase):
+    """Give every test its own empty default provider.
+
+    The seam holds one process-global slot, so a test that left a provider, or a
+    stored record, behind would decide what the next test sees.
+    """
+
+    def setUp(self):
+        super().setUp()
+        set_snapshot_provider(None)
+
+    def tearDown(self):
+        set_snapshot_provider(None)
+        super().tearDown()
+
+
+class SnapshotVocabularyTests(SimpleTestCase):
+    """One record shape, one schema version, and no second tip-type registry."""
+
+    def test_the_stored_schema_version_is_one(self):
+        self.assertEqual(SNAPSHOT_SCHEMA_VERSION, 1)
+
+    def test_a_snapshot_is_exactly_the_four_documented_keys(self):
+        self.assertEqual(set(SNAPSHOT_KEYS), SNAPSHOT_RECORD_KEYS)
+        self.assertEqual(len(SNAPSHOT_KEYS), 4)
+        for key in SNAPSHOT_KEYS:
+            with self.subTest(key=key):
+                self.assertIsInstance(key, str)
+
+    def test_the_module_publishes_the_documented_seam_names(self):
+        for name in (
+            'SNAPSHOT_SCHEMA_VERSION', 'SNAPSHOT_KEYS',
+            'InMemorySnapshotProvider', 'get_snapshot_provider',
+            'set_snapshot_provider', 'load_snapshot', 'store_snapshot',
+            'clear_snapshots',
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(readmodel_v1, name))
+
+    def test_a_stored_record_carries_exactly_those_keys(self):
+        provider = InMemorySnapshotProvider()
+        record = provider.store('any_key_at_all', {'matches': []})
+        self.assertEqual(set(record), SNAPSHOT_RECORD_KEYS)
+        self.assertEqual(
+            set(provider.load('any_key_at_all')), SNAPSHOT_RECORD_KEYS)
+
+    def test_a_record_is_stamped_with_the_schema_version_and_its_own_key(self):
+        provider = InMemorySnapshotProvider()
+        record = provider.store('any_key_at_all', {'matches': []})
+        self.assertEqual(record['schema_version'], SNAPSHOT_SCHEMA_VERSION)
+        self.assertEqual(record['type_key'], 'any_key_at_all')
+
+
+class SnapshotStorageTests(SimpleTestCase):
+    """The default provider holds snapshots, or reports that it holds none."""
+
+    def setUp(self):
+        super().setUp()
+        self.provider = InMemorySnapshotProvider()
+
+    def test_an_absent_key_loads_as_none(self):
+        self.assertIsNone(self.provider.load('never_stored'))
+
+    def test_a_stored_payload_and_its_key_round_trip(self):
+        payload = {'matches': ['a', 'b'], 'count': 2}
+        self.provider.store('bet_of_the_day', payload)
+        record = self.provider.load('bet_of_the_day')
+        self.assertEqual(record['payload'], payload)
+        self.assertEqual(record['type_key'], 'bet_of_the_day')
+
+    def test_a_later_store_replaces_the_record_for_the_same_key(self):
+        self.provider.store('bet_of_the_day', {'version': 1})
+        self.provider.store('bet_of_the_day', {'version': 2})
+        self.assertEqual(
+            self.provider.load('bet_of_the_day')['payload'], {'version': 2})
+
+    def test_a_key_the_endpoint_never_uses_is_a_legitimate_key(self):
+        # The store owns storage, not the tip-type vocabulary: an unknown but
+        # hashable key, an integer, a tuple and a bool are all usable keys.
+        for type_key in ('not-a-v1-key', 7, ('a', 'tuple'), True):
+            with self.subTest(type_key=type_key):
+                self.provider.store(type_key, {'payload': type_key})
+                self.assertEqual(
+                    self.provider.load(type_key)['type_key'], type_key)
+
+    def test_two_providers_never_share_a_record(self):
+        other = InMemorySnapshotProvider()
+        self.provider.store('bet_of_the_day', {'matches': []})
+        self.assertIsNone(other.load('bet_of_the_day'))
+
+    def test_clearing_forgets_every_record(self):
+        self.provider.store('bet_of_the_day', {})
+        self.provider.store('daily_accumulator', {})
+        self.provider.clear()
+        self.assertIsNone(self.provider.load('bet_of_the_day'))
+        self.assertIsNone(self.provider.load('daily_accumulator'))
+
+    def test_clearing_an_empty_provider_is_idempotent(self):
+        self.provider.clear()
+        self.provider.clear()
+        self.assertIsNone(self.provider.load('bet_of_the_day'))
+
+    def test_an_unhashable_key_is_refused_by_storage(self):
+        for type_key in ([], {}, {'a': 'b'}, ['bet_of_the_day']):
+            with self.subTest(type_key=type_key):
+                with self.assertRaises(TypeError):
+                    self.provider.store(type_key, {'matches': []})
+                with self.assertRaises(TypeError):
+                    self.provider.load(type_key)
+
+    def test_a_refused_key_leaves_the_provider_usable(self):
+        with self.assertRaises(TypeError):
+            self.provider.store([], {'matches': []})
+        self.provider.store('bet_of_the_day', {'matches': []})
+        self.assertEqual(
+            self.provider.load('bet_of_the_day')['payload'], {'matches': []})
+
+
+class SnapshotCopyTests(SimpleTestCase):
+    """Stored state is never reachable through an alias a caller holds."""
+
+    def setUp(self):
+        super().setUp()
+        self.provider = InMemorySnapshotProvider()
+        self.payload = {
+            'date': SOURCE_DATE_TEXT,
+            'matches': [{
+                'match_title': 'Arsenal vs Chelsea',
+                'teams': ['Arsenal', 'Chelsea'],
+            }],
+        }
+
+    def test_mutating_the_payload_after_the_store_does_not_change_it(self):
+        self.provider.store('bet_of_the_day', self.payload)
+        self.payload['matches'][0]['teams'][0] = 'Mutated'
+        self.payload['matches'].append({'match_title': 'Invented'})
+        stored = self.provider.load('bet_of_the_day')['payload']
+        self.assertEqual(stored['date'], SOURCE_DATE_TEXT)
+        self.assertEqual(stored['matches'][0]['teams'], ['Arsenal', 'Chelsea'])
+        self.assertEqual(len(stored['matches']), 1)
+
+    def test_mutating_a_loaded_record_does_not_change_the_snapshot(self):
+        self.provider.store('bet_of_the_day', self.payload)
+        loaded = self.provider.load('bet_of_the_day')
+        loaded['payload']['matches'].append({'match_title': 'Invented'})
+        loaded['type_key'] = 'mutated'
+        stored = self.provider.load('bet_of_the_day')
+        self.assertEqual(len(stored['payload']['matches']), 1)
+        self.assertEqual(stored['type_key'], 'bet_of_the_day')
+
+    def test_the_record_returned_by_the_store_is_a_defensive_copy(self):
+        record = self.provider.store('bet_of_the_day', self.payload)
+        record['payload']['matches'].append({'match_title': 'Invented'})
+        record['payload']['matches'][0]['match_title'] = 'Mutated'
+        stored = self.provider.load('bet_of_the_day')['payload']
+        self.assertEqual(len(stored['matches']), 1)
+        self.assertEqual(stored['matches'][0]['match_title'],
+                         'Arsenal vs Chelsea')
+
+    def test_each_load_returns_a_fresh_object(self):
+        self.provider.store('bet_of_the_day', self.payload)
+        first = self.provider.load('bet_of_the_day')
+        second = self.provider.load('bet_of_the_day')
+        self.assertIsNot(first, second)
+        self.assertIsNot(first['payload'], second['payload'])
+        self.assertIsNot(
+            first['payload']['matches'], second['payload']['matches'])
+
+
+class SnapshotTimestampTests(SimpleTestCase):
+    """A snapshot's stamp is an aware UTC datetime, or the store refuses it."""
+
+    def setUp(self):
+        super().setUp()
+        self.provider = InMemorySnapshotProvider()
+
+    def store(self, **kwargs):
+        """Store one trivial snapshot and return the stored record."""
+        return self.provider.store('bet_of_the_day', {'matches': []},
+                                   **kwargs)
+
+    def test_an_omitted_stamp_is_now_in_utc(self):
+        before = datetime.now(timezone.utc)
+        stamp = self.store()['fetched_at']
+        after = datetime.now(timezone.utc)
+        self.assertIsInstance(stamp, datetime)
+        self.assertIsNotNone(stamp.tzinfo)
+        self.assertEqual(stamp.utcoffset(), timedelta(0))
+        self.assertLessEqual(before, stamp)
+        self.assertLessEqual(stamp, after)
+
+    def test_an_explicit_none_stamp_means_omitted(self):
+        stamp = self.store(fetched_at=None)['fetched_at']
+        self.assertIsInstance(stamp, datetime)
+        self.assertEqual(stamp.utcoffset(), timedelta(0))
+
+    def test_a_stored_stamp_is_a_datetime_and_never_the_wire_text(self):
+        stamp = self.store(fetched_at=FETCHED_AT)['fetched_at']
+        self.assertIsInstance(stamp, datetime)
+        self.assertNotIsInstance(stamp, str)
+        self.assertEqual(stamp, FETCHED_AT)
+        # The wire text of the same instant is a different type and value:
+        # nothing in the store rendered or parsed it.
+        self.assertNotEqual(stamp, FETCHED_AT_Z)
+
+    def test_a_stored_stamp_keeps_its_microseconds(self):
+        stamp = FETCHED_AT.replace(microsecond=987654)
+        stored = self.store(fetched_at=stamp)
+        self.assertEqual(stored['fetched_at'], stamp)
+        self.assertEqual(stored['fetched_at'].microsecond, 987654)
+
+    def test_a_naive_datetime_is_refused_rather_than_assumed_utc(self):
+        with self.assertRaisesRegex(ValueError, 'timezone-aware'):
+            self.store(fetched_at=NAIVE_FETCHED_AT)
+        self.assertIsNone(self.provider.load('bet_of_the_day'))
+
+    def test_a_non_datetime_stamp_is_refused(self):
+        for candidate in (FETCHED_AT_Z, '', 0, True, [], {}):
+            with self.subTest(candidate=candidate):
+                with self.assertRaises(TypeError):
+                    self.store(fetched_at=candidate)
+        self.assertIsNone(self.provider.load('bet_of_the_day'))
+
+    def test_a_date_is_not_a_datetime_stamp(self):
+        with self.assertRaises(TypeError):
+            self.store(fetched_at=date(2026, 9, 28))
+
+    def test_an_aware_non_utc_stamp_is_normalised_to_utc(self):
+        for offset in (timedelta(hours=3), timedelta(hours=-5),
+                       timedelta(hours=1, minutes=30)):
+            with self.subTest(offset=offset):
+                supplied = FETCHED_AT.astimezone(timezone(offset))
+                stamp = self.store(fetched_at=supplied)['fetched_at']
+                self.assertEqual(stamp, supplied)
+                self.assertEqual(stamp, FETCHED_AT)
+                self.assertEqual(stamp.utcoffset(), timedelta(0))
+                self.assertEqual(stamp.tzinfo, timezone.utc)
+
+    def test_the_stored_stamp_stays_a_datetime_on_the_way_back_out(self):
+        self.store(fetched_at=FETCHED_AT)
+        loaded = self.provider.load('bet_of_the_day')['fetched_at']
+        self.assertIsInstance(loaded, datetime)
+        self.assertEqual(loaded, FETCHED_AT)
+        self.assertEqual(loaded.utcoffset(), timedelta(0))
+
+    def test_a_refused_stamp_stores_nothing_at_all(self):
+        with self.assertRaises(TypeError):
+            self.store(fetched_at=FETCHED_AT_Z)
+        self.store()
+        self.assertEqual(
+            self.provider.load('bet_of_the_day')['payload'], {'matches': []})
+
+
+class ModuleSeamTests(SnapshotProviderTestCase):
+    """The seam forwards to the installed provider and adds no rule of its own."""
+
+    def test_the_installed_provider_defaults_to_the_in_memory_one(self):
+        self.assertIsInstance(get_snapshot_provider(),
+                              InMemorySnapshotProvider)
+
+    def test_the_seam_stores_and_loads_through_the_default_provider(self):
+        record = store_snapshot('bet_of_the_day', {'matches': [1]},
+                                fetched_at=FETCHED_AT)
+        self.assertEqual(set(record), SNAPSHOT_RECORD_KEYS)
+        loaded = load_snapshot('bet_of_the_day')
+        self.assertEqual(loaded['payload'], {'matches': [1]})
+        self.assertEqual(loaded['fetched_at'], FETCHED_AT)
+        self.assertIsNot(loaded, record)
+        clear_snapshots()
+        self.assertIsNone(load_snapshot('bet_of_the_day'))
+
+    def test_setting_none_installs_a_brand_new_empty_default_provider(self):
+        previous = get_snapshot_provider()
+        store_snapshot('bet_of_the_day', {'matches': [1]})
+        set_snapshot_provider(None)
+        replacement = get_snapshot_provider()
+        self.assertIsNot(replacement, previous)
+        self.assertIsInstance(replacement, InMemorySnapshotProvider)
+        self.assertIsNone(load_snapshot('bet_of_the_day'))
+        # The provider it replaced was discarded, not emptied: a reader already
+        # holding it keeps the record it was handed.
+        self.assertEqual(
+            previous.load('bet_of_the_day')['payload'], {'matches': [1]})
+
+    def test_store_and_load_delegate_to_the_installed_provider(self):
+        provider = RecordingSnapshotProvider()
+        set_snapshot_provider(provider)
+        payload = {'matches': [1]}
+        record = store_snapshot('custom_key', payload, fetched_at=FETCHED_AT)
+        self.assertEqual(
+            provider.calls, [('store', 'custom_key', payload, FETCHED_AT)])
+        self.assertIs(record['payload'], payload)
+        self.assertIs(record['fetched_at'], FETCHED_AT)
+        self.assertIs(load_snapshot('custom_key'), record)
+        self.assertEqual(provider.calls[-1], ('load', 'custom_key'))
+
+    def test_the_seam_never_invents_a_stamp_for_a_custom_provider(self):
+        provider = RecordingSnapshotProvider()
+        set_snapshot_provider(provider)
+        store_snapshot('custom_key', {'matches': []})
+        self.assertEqual(provider.calls[0][0], 'store')
+        self.assertIsNone(provider.calls[0][3])
+
+    def test_the_seam_does_not_impose_the_default_stamp_policy(self):
+        # The strict "aware UTC datetime or refuse" rule belongs to
+        # InMemorySnapshotProvider. A deliberate provider may give the stamp its
+        # own meaning, so the seam must forward it untouched.
+        provider = RecordingSnapshotProvider()
+        set_snapshot_provider(provider)
+        record = store_snapshot('custom_key', {}, fetched_at=FETCHED_AT_Z)
+        self.assertEqual(record['fetched_at'], FETCHED_AT_Z)
+
+    def test_the_seam_does_not_impose_the_default_key_policy(self):
+        provider = RecordingSnapshotProvider()
+        set_snapshot_provider(provider)
+        store_snapshot('not-a-v1-key', {'matches': []})
+        self.assertEqual(provider.calls[0][1], 'not-a-v1-key')
+
+    def test_clear_delegates_to_the_installed_provider(self):
+        provider = RecordingSnapshotProvider()
+        set_snapshot_provider(provider)
+        store_snapshot('custom_key', {'matches': []})
+        self.assertEqual(len(provider.records), 1)
+        clear_snapshots()
+        self.assertEqual(provider.records, {})
+        self.assertEqual(provider.calls[-1], ('clear',))
+
+    def test_a_custom_provider_with_the_three_methods_is_accepted(self):
+        provider = RecordingSnapshotProvider()
+        set_snapshot_provider(provider)
+        self.assertIs(get_snapshot_provider(), provider)
+
+    def test_a_provider_that_cannot_be_delegated_to_is_refused(self):
+        candidates = ('not-a-provider', object(), 7, [], {},
+                      ProviderWithoutACallableLoad(), ProviderWithoutClear())
+        for candidate in candidates:
+            with self.subTest(candidate=repr(candidate)):
+                with self.assertRaises(TypeError):
+                    set_snapshot_provider(candidate)
+
+    def test_a_refused_provider_leaves_the_installed_one_untouched(self):
+        installed = get_snapshot_provider()
+        store_snapshot('bet_of_the_day', {'matches': [1]})
+        with self.assertRaises(TypeError):
+            set_snapshot_provider(ProviderWithoutClear())
+        self.assertIs(get_snapshot_provider(), installed)
+        self.assertEqual(
+            load_snapshot('bet_of_the_day')['payload'], {'matches': [1]})
+
+    def test_the_refusal_message_names_the_missing_method(self):
+        with self.assertRaisesRegex(TypeError, 'clear'):
+            set_snapshot_provider(ProviderWithoutClear())
+
+
+class ReadModelIsolationTests(SimpleTestCase):
+    """The snapshot seam stays importable without a configured environment."""
+
+    def read_source(self):
+        return READMODEL_V1_PATH.read_text(encoding='utf-8')
+
+    def imported_names(self):
+        """Return (import roots, imported dotted names, relative imports)."""
+        tree = ast.parse(self.read_source())
+        roots = set()
+        names = set()
+        relative_imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots.update(alias.name.split('.')[0] for alias in node.names)
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    relative_imports.append((node.level, node.module))
+                    continue
+                roots.add((node.module or '').split('.')[0])
+                names.update(
+                    f'{node.module}.{alias.name}' for alias in node.names)
+        return roots, names, relative_imports
+
+    def test_the_read_model_imports_only_standard_library_roots(self):
+        roots, _names, _relative = self.imported_names()
+        self.assertTrue(roots, 'the read model must import something')
+        self.assertEqual(roots, set(READMODEL_ALLOWED_IMPORT_ROOTS))
+
+    def test_the_read_model_imports_only_the_four_allowed_names(self):
+        _roots, names, _relative = self.imported_names()
+        self.assertEqual(names, set(READMODEL_ALLOWED_IMPORTS))
+
+    def test_the_read_model_makes_no_relative_import(self):
+        _roots, _names, relative = self.imported_names()
+        self.assertEqual(relative, [])
+
+    def test_the_read_model_names_no_framework_source_or_formatter(self):
+        source = self.read_source().lower()
+        for token in READMODEL_FORBIDDEN_SOURCE_TOKENS:
+            with self.subTest(token=token):
+                self.assertNotIn(token, source)
+
+    def test_the_read_model_holds_no_tip_type_registry(self):
+        source = self.read_source().lower()
+        for token in READMODEL_FORBIDDEN_REGISTRY_TOKENS:
+            with self.subTest(token=token):
+                self.assertNotIn(token.lower(), source)
+
+    def test_the_read_model_records_the_standard_library_rule(self):
+        source = self.read_source()
+        self.assertIn('Standard library only', source)
+        self.assertIn("``threading.Lock``", source)
+        self.assertIn('makes no network call', source)
+
+    def test_the_read_model_records_the_delegation_rule(self):
+        source = self.read_source()
+        self.assertIn(
+            'The module-level seam functions delegate to the', source)
+        self.assertIn(
+            'installed provider and add no rule of their own', source)
+        self.assertIn('InMemorySnapshotProvider', source)
+
+    def test_the_read_model_records_the_datetime_and_wire_rule(self):
+        source = self.read_source()
+        self.assertIn('aware UTC', source)
+        self.assertIn('never renders that', source)
+        self.assertIn('never parses text into it', source)
+
+    def test_the_read_model_records_the_commit_scope(self):
+        source = self.read_source()
+        self.assertIn('Commit 2 publishes the seam', source)
+        self.assertIn('Nothing here is', source)
+        self.assertIn('wired into a view', source)
