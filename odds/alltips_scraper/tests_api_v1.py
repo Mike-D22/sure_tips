@@ -9,7 +9,7 @@ with a unit, every mapped leg carries the contract's fixed temporal markers, and
 the volatile fetch metadata is dropped.
 Those renames and fixed fields are the contract a client will be written against,
 so they are pinned here
-before any view exists — the serializers are the only thing that decides the
+before any view existed — the serializers are the only thing that decides the
 public shape, and a rename is exactly the kind of change that is invisible until
 it breaks a client.
 
@@ -21,16 +21,20 @@ pin while the store still has no other caller.
 
 Ground rules
 ------------
-* **No network, no database, no endpoint.** Every test is a pure call on a
-  ``SimpleTestCase``, or a call through the process-local default snapshot
-  provider; nothing here can fetch, nothing here writes, and no view, URL route,
-  or response is exercised. The endpoint and its routing are a later commit.
-* **No scraper import.** The payloads below are hand-written mirrors of the
-  frozen parser envelopes, in the style of ``tests.py``, so this module imports
-  neither the scraper module nor a fixture file. That is deliberate: the public
-  serializers must be usable without the scraper's import-time configuration. The
-  registry is compared against the legacy configuration table in the
-  Django-configured layer.
+* **No network, no database.** Nothing here can fetch and nothing here writes:
+  the serializer and read-model tests are pure calls on a ``SimpleTestCase`` or on
+  the process-local default snapshot provider, and the endpoint tests at the foot
+  of this module run with the socket layer disabled (``OfflineGuardMixin``), so an
+  accidental outbound request raises instead of passing quietly.
+* **The mapping and store layers stay scraper-free.** The payloads they are
+  tested with are hand-written mirrors of the frozen parser envelopes, in the
+  style of ``tests.py``, so this module's mapping tests import neither the scraper
+  module nor a fixture file: the public serializers must be usable without the
+  scraper's import-time configuration. The registry is compared against the
+  legacy configuration table in the Django-configured layer. Only the endpoint
+  section imports the legacy layer, through ``from . import utils``, and only to
+  drive the frozen parsers over the static synthetic fixtures — never to fetch,
+  and never to hand-write a second copy of a payload shape.
 * **No clock.** Every timestamp comes from a fixed constant, so no expectation
   here depends on the machine's date, timezone, or locale.
 * **No formatter borrowing.** The read model stores and normalises timezone-aware
@@ -47,19 +51,32 @@ halves of that one contract together here: the read model decides what a snapsho
 *is* (an opaque key, an unparsed payload, and an authoritative aware UTC
 ``datetime``), and the serializers decide how it appears on the wire.
 
-Response status codes, query validation, the view and its URL route, the
-date-equality filter, and any durable or shared snapshot provider belong to later
-commits and are asserted there, not here.
+Commit 3 adds the offline endpoint: its route and namespace, its query validation
+order, its ``filter`` block, its ``503``, and its error bodies, driven through
+Django's test client with snapshots seeded through ``store_snapshot()`` from
+fixture-derived parser payloads. It still asserts nothing about a durable or
+shared provider, and it still never fetches: the endpoint's data source is the
+seam.
+
+Still left to a later commit: a durable or shared snapshot provider, provider
+selection through configuration, the scraper being wired to fill a snapshot, and
+any conversion of source display text into an authoritative timestamp.
 """
 
 import ast
 import json
+import socket
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from django.test import SimpleTestCase
+from django.urls import resolve, reverse
 
 from . import readmodel_v1
+from . import urls_v1
+from . import utils
+from . import views_v1
 from .readmodel_v1 import (
     SNAPSHOT_KEYS,
     SNAPSHOT_SCHEMA_VERSION,
@@ -75,6 +92,8 @@ from .serializers_v1 import (
     CARD_UNIT_TIP_KEYS,
     ERROR_CODES,
     ERROR_INVALID_DATE,
+    ERROR_INVALID_TIMEZONE,
+    ERROR_MESSAGES,
     ERROR_MISSING_TIMEZONE,
     ERROR_MISSING_TIP_TYPE,
     ERROR_SOURCE_UNAVAILABLE,
@@ -101,6 +120,18 @@ from .serializers_v1 import (
     is_supported_tip_type,
     serialize_tips,
     unit_for,
+)
+from .tests_parser_contract import (
+    FIXTURE_FOR_SOURCE,
+    OfflineGuardMixin,
+    TEST_DATE,
+    load_fixture,
+)
+from .views_v1 import (
+    FILTER_KEYS,
+    LEGACY_SOURCE_KEY,
+    QUERY_PARAMETERS,
+    tips_v1,
 )
 
 SERIALIZERS_V1_PATH = Path(__file__).resolve().parent / 'serializers_v1.py'
@@ -1760,3 +1791,987 @@ class ReadModelIsolationTests(SimpleTestCase):
         self.assertIn('Commit 2 publishes the seam', source)
         self.assertIn('Nothing here is', source)
         self.assertIn('wired into a view', source)
+
+
+# ---------------------------------------------------------------------------
+# The endpoint: ``views_v1`` and its ``/api/v1/`` route (Commit 3)
+# ---------------------------------------------------------------------------
+
+# The one public URL this commit adds, and the namespaced route name a client
+# builds it from.
+ENDPOINT_PATH = '/api/v1/tips/'
+ENDPOINT_ROUTE_NAME = 'tips_v1:tips'
+
+VIEWS_V1_PATH = Path(__file__).resolve().parent / 'views_v1.py'
+URLS_V1_PATH = Path(__file__).resolve().parent / 'urls_v1.py'
+
+# The legacy routes: the versioned surface is additive, so all of these must keep
+# resolving to the same names they resolved to before it existed.
+LEGACY_ROUTES = (
+    ('/api/health/', 'health'),
+    ('/api/bet-of-the-day/', 'bet_of_the_day'),
+    ('/api/daily-accumulator/', 'daily_accumulator'),
+    ('/api/btts-win-accumulator/', 'btts_win_accumulator'),
+    ('/api/over-25-goals-accumulator/', 'over_25_goals_accumulator'),
+    ('/api/BTTS/', 'both_teams_to_score'),
+    ('/api/goalscorer/', 'anytime_goalscorer'),
+)
+
+# The response layer may import Django and the standard library, plus exactly two
+# frozen v1 modules, and nothing else: no scraper, no parser, no transport, no
+# cache helper, and no configuration reader.
+VIEWS_V1_ALLOWED_IMPORT_ROOTS = frozenset({
+    'collections', 'datetime', 'django', 'logging', 're', 'zoneinfo',
+})
+
+# Tokens that must not appear anywhere in the response layer's source, comments
+# and docstrings included. The read half of the seam is deliberately absent from
+# this scan: the AST test pins the single name that may be imported from it.
+VIEWS_V1_FORBIDDEN_SOURCE_TOKENS = (
+    'utils', 'handlers', 'parsers', 'cache_matches', 'cloudscraper',
+    'requests', 'aiohttp', 'urllib', 'socket', 'http.client', 'scrape_one',
+    'scrape_all', 'InMemorySnapshotProvider', 'timezone.activate', 'localtime',
+    'astimezone', 'timedelta', 'utcnow', 'fromtimestamp', 'strftime',
+    'strptime', 'settings', 'TIME_ZONE', 'getenv', 'environ', 'scrape_url',
+    'scraped_at', 'source_url', 'SOURCE_LABEL_KEY',
+)
+
+# Request dates that are not the documented strict spelling. The first two are the
+# reason the endpoint checks the spelling before it parses anything:
+# ``date.fromisoformat()`` alone accepts both of them on Python 3.11+.
+UNSTRICT_DATE_TEXTS = (
+    '20260927', '2026-W39-1', '2026-9-27', '27-09-2026', '2026/09/27',
+    '2026-09-27T00:00:00', '2026-09-27Z', ' 2026-09-27', '2026-09-27 ',
+    '', 'None', 'yesterday', '2026-02-30',
+)
+
+# Zone names no tz database can load: an unknown area, an unknown city, a
+# repeated slash, and two keys that are not names at all.
+UNLOADABLE_TIMEZONE_NAMES = (
+    'Not/AZone', 'Europe/Nowhere', 'Antarctica/Nowhere', 'UTC+1',
+    'Europe London', 'Europe/London/extra', '', '../..', '/etc/passwd',
+)
+
+# Tokens that must not appear anywhere in an error body: a host, an upstream URL,
+# a fixture name, an exception class, a traceback, or a source name. An error body
+# carrying any of them is exactly the leak the error vocabulary prevents.
+CLIENT_UNSAFE_BODY_TOKENS = (
+    'http://', 'https://', 'freesupertips', 'Traceback', 'File "',
+    'ZoneInfo', 'ValueError', 'TypeError', 'KeyError', '.html',
+    'cloudscraper', 'requests', 'scraper', 'Exception',
+)
+
+# The legacy and entitlement keys a v1 response must never carry. ``date`` is the
+# one exception: the endpoint's own ``filter.date`` echo reuses that spelling.
+FORBIDDEN_RESPONSE_KEYS = frozenset(FORBIDDEN_V1_KEYS - {'date'})
+
+
+class ErrorBodyAssertions:
+    """Shared pins for a client-safe versioned error body.
+
+    One shape, one key set, one content type: an error body is the serializers'
+    own ``api_error()`` mapping published at its documented status, with the
+    documented message text, and there is no room in it for a host, an upstream
+    URL, an exception class, or a traceback.
+    """
+
+    def assertApiError(self, response, code, field, status=400):
+        """Assert one error body is exactly the documented envelope."""
+        self.assertEqual(response.status_code, status)
+        self.assertEqual(response['Content-Type'], 'application/json')
+        body = response.json()
+        self.assertEqual(set(body), {'api_version', 'error'})
+        self.assertEqual(body['api_version'], API_VERSION)
+        self.assertEqual(set(body['error']), {'code', 'message', 'field'})
+        self.assertEqual(body['error']['code'], code)
+        self.assertEqual(body['error']['field'], field)
+        self.assertEqual(body['error']['message'], ERROR_MESSAGES[code])
+        return body
+
+
+class EndpointTestCase(OfflineGuardMixin, SnapshotProviderTestCase):
+    """A fixture-derived snapshot in the seam, with the socket layer disabled.
+
+    The payload comes from the frozen parsers reading the static synthetic
+    fixtures — never from a fetch — and is filed with the injected test date
+    through ``store_snapshot()``, so the endpoint answers exactly the way a later
+    installed provider will make it answer. Every class below also inherits the
+    socket guard, so no request in this section can reach a network by accident.
+    """
+
+    SOURCE_KEY = 'bet_of_the_day'
+
+    def setUp(self):
+        super().setUp()
+        self.payload = self.parse_fixture_payload()
+        self.seed(self.payload)
+
+    def parse_fixture_payload(self):
+        """Return this source's payload, parsed from its static fixture."""
+        return utils.parse_bet_of_the_day_page(
+            load_fixture(FIXTURE_FOR_SOURCE[self.SOURCE_KEY]),
+            TEST_DATE,
+        )
+
+    def seed(self, payload, source_key=None):
+        """File ``payload`` under ``source_key`` and return its snapshot record."""
+        return store_snapshot(
+            source_key or self.SOURCE_KEY, payload, fetched_at=FETCHED_AT)
+
+    def use_recording_provider(self):
+        """Install a recording provider holding this source's fixture payload."""
+        provider = RecordingSnapshotProvider()
+        set_snapshot_provider(provider)
+        self.addCleanup(set_snapshot_provider, None)
+        self.seed(self.payload)
+        provider.calls.clear()
+        return provider
+
+    def seed_record(self, record):
+        """Answer this source with a deliberate raw record, not a stored snapshot."""
+        provider = RecordingSnapshotProvider()
+        provider.records[self.SOURCE_KEY] = record
+        set_snapshot_provider(provider)
+        self.addCleanup(set_snapshot_provider, None)
+        return provider
+
+    def get(self, **params):
+        """Return the endpoint's response for the given query parameters."""
+        return self.client.get(ENDPOINT_PATH, params)
+
+
+class EndpointRoutingTests(OfflineGuardMixin, SimpleTestCase):
+    """One namespaced route is added, and every legacy route still resolves."""
+
+    def test_the_route_reverses_to_the_documented_path(self):
+        self.assertEqual(reverse(ENDPOINT_ROUTE_NAME), ENDPOINT_PATH)
+
+    def test_the_path_resolves_to_the_view_in_its_own_module(self):
+        match = resolve(ENDPOINT_PATH)
+        self.assertEqual(match.view_name, ENDPOINT_ROUTE_NAME)
+        self.assertIs(match.func, tips_v1)
+        self.assertEqual(match.func.__module__, 'alltips_scraper.views_v1')
+
+    def test_the_url_module_publishes_one_namespaced_route(self):
+        self.assertEqual(urls_v1.app_name, 'tips_v1')
+        self.assertEqual(len(urls_v1.urlpatterns), 1)
+        pattern = urls_v1.urlpatterns[0]
+        self.assertEqual(pattern.name, 'tips')
+        self.assertEqual(str(pattern.pattern), 'tips/')
+
+    def test_the_url_module_imports_only_django_and_the_view(self):
+        tree = ast.parse(URLS_V1_PATH.read_text(encoding='utf-8'))
+        imports = [
+            node for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
+        self.assertEqual(len(imports), 2)
+        self.assertEqual(
+            {(node.module, alias.name)
+             for node in imports for alias in node.names},
+            {('django.urls', 'path'), ('views_v1', 'tips_v1')},
+        )
+
+    def test_every_legacy_route_still_resolves_to_the_same_name(self):
+        for path, name in LEGACY_ROUTES:
+            with self.subTest(path=path):
+                self.assertEqual(resolve(path).url_name, name)
+
+    def test_the_versioned_route_shadows_no_legacy_route(self):
+        legacy_names = [resolve(path).url_name for path, _ in LEGACY_ROUTES]
+        self.assertEqual(len(legacy_names), len(set(legacy_names)))
+        self.assertNotIn('tips', legacy_names)
+        self.assertEqual(resolve(ENDPOINT_PATH).view_name, ENDPOINT_ROUTE_NAME)
+
+
+class EndpointIsolationTests(EndpointTestCase):
+    """The response layer is offline by construction, not by discipline."""
+
+    def read_source(self):
+        return VIEWS_V1_PATH.read_text(encoding='utf-8')
+
+    def imported_names(self):
+        """Return (import roots, imported names, relative module names)."""
+        tree = ast.parse(self.read_source())
+        roots = set()
+        names = set()
+        relative = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots.update(alias.name.split('.')[0] for alias in node.names)
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ''
+                if node.level:
+                    relative.append(module)
+                else:
+                    roots.add(module.split('.')[0])
+                names.update(f'{module}.{alias.name}' for alias in node.names)
+        return roots, names, relative
+
+    def test_the_view_imports_only_django_the_stdlib_and_the_frozen_modules(self):
+        roots, _names, relative = self.imported_names()
+        self.assertEqual(roots, set(VIEWS_V1_ALLOWED_IMPORT_ROOTS))
+        self.assertEqual(sorted(relative), ['readmodel_v1', 'serializers_v1'])
+
+    def test_the_view_imports_the_read_half_of_the_seam_and_nothing_else(self):
+        _roots, names, _relative = self.imported_names()
+        readmodel_names = {
+            name.split('.', 1)[1] for name in names
+            if name.startswith('readmodel_v1.')
+        }
+        self.assertEqual(readmodel_names, {'load_snapshot'})
+
+    def test_the_view_source_names_no_scraper_transport_cache_or_configuration(self):
+        source = self.read_source().lower()
+        for token in VIEWS_V1_FORBIDDEN_SOURCE_TOKENS:
+            with self.subTest(token=token):
+                self.assertNotIn(token.lower(), source)
+        self.assertIn('load_snapshot', source)
+
+    def test_the_view_reuses_the_frozen_key_vocabulary(self):
+        self.assertEqual(LEGACY_SOURCE_KEY, 'source')
+        self.assertEqual(SOURCE_DATE_KEY, 'date')
+        self.assertNotIn('SOURCE_DATE_KEY =', self.read_source())
+        self.assertFalse(hasattr(views_v1, 'SOURCE_LABEL_KEY'))
+
+    def test_the_endpoint_reads_through_the_installed_provider_only(self):
+        provider = self.use_recording_provider()
+        self.assertEqual(self.get(type=self.SOURCE_KEY).status_code, 200)
+        self.assertEqual(provider.calls, [('load', self.SOURCE_KEY)])
+        self.assertIs(get_snapshot_provider(), provider)
+
+    def test_the_endpoint_reads_the_snapshot_once_per_request(self):
+        provider = self.use_recording_provider()
+        self.get(type=self.SOURCE_KEY)
+        self.get(
+            type=self.SOURCE_KEY, date=SOURCE_DATE_TEXT, timezone='Europe/London')
+        self.assertEqual(provider.calls, [('load', self.SOURCE_KEY)] * 2)
+
+    def test_the_endpoint_neither_fetches_nor_parses(self):
+        def forbidden(*args, **kwargs):
+            raise AssertionError('the endpoint must not fetch or parse')
+
+        with mock.patch.object(utils, 'scrape_one', forbidden), \
+                mock.patch.object(utils, 'scrape_all', forbidden), \
+                mock.patch.object(utils, 'parse_bet_of_the_day_page', forbidden):
+            self.assertEqual(self.get(type=self.SOURCE_KEY).status_code, 200)
+            set_snapshot_provider(None)
+            self.assertEqual(self.get(type=self.SOURCE_KEY).status_code, 503)
+
+    def test_the_endpoint_answers_with_the_socket_layer_disabled(self):
+        with self.assertRaises(AssertionError):
+            socket.socket()
+        self.assertEqual(self.get(type=self.SOURCE_KEY).status_code, 200)
+
+    def test_a_request_leaves_the_stored_snapshot_untouched(self):
+        before = load_snapshot(self.SOURCE_KEY)
+        self.get(type=self.SOURCE_KEY)
+        self.get(type=self.SOURCE_KEY, date='1999-01-01', timezone='Etc/UTC')
+        self.assertEqual(load_snapshot(self.SOURCE_KEY), before)
+
+
+class QueryValidationOrderTests(ErrorBodyAssertions, EndpointTestCase):
+    """The validation order is the contract, and a ``400`` never reads a snapshot.
+
+    No snapshot is installed for these tests, so every answer below is a
+    validation result: a ``503`` here would mean the query had been accepted,
+    which is exactly the confusion the ordering exists to prevent.
+    """
+
+    def setUp(self):
+        super().setUp()
+        set_snapshot_provider(None)
+
+    def test_a_missing_type_is_refused_whatever_else_is_asked(self):
+        queries = (
+            {},
+            {'date': SOURCE_DATE_TEXT},
+            {'timezone': 'Europe/London'},
+            {'date': SOURCE_DATE_TEXT, 'timezone': 'Europe/London'},
+            {'date': 'yesterday', 'timezone': 'Not/AZone'},
+        )
+        for params in queries:
+            with self.subTest(params=params):
+                self.assertApiError(
+                    self.client.get(ENDPOINT_PATH, params),
+                    ERROR_MISSING_TIP_TYPE,
+                    'type',
+                )
+
+    def test_an_empty_type_is_unknown_rather_than_missing(self):
+        self.assertApiError(self.get(type=''), ERROR_UNKNOWN_TIP_TYPE, 'type')
+
+    def test_an_unknown_type_is_refused_before_the_date_is_looked_at(self):
+        for value in ('not-a-source', 'Bet_of_the_day', 'bet-of-the-day',
+                      'bet of the day', 'BET_OF_THE_DAY', 'bet_of_the_day ',
+                      'daily_accumulators'):
+            with self.subTest(value=value):
+                self.assertApiError(
+                    self.get(
+                        type=value, date='yesterday', timezone='Not/AZone'),
+                    ERROR_UNKNOWN_TIP_TYPE,
+                    'type',
+                )
+
+    def test_a_date_that_is_not_strictly_spelled_is_refused(self):
+        for value in UNSTRICT_DATE_TEXTS:
+            with self.subTest(value=value):
+                self.assertApiError(
+                    self.get(
+                        type=self.SOURCE_KEY, date=value,
+                        timezone='Europe/London'),
+                    ERROR_INVALID_DATE,
+                    'date',
+                )
+
+    def test_an_invalid_date_is_refused_before_the_timezone_is_validated(self):
+        self.assertApiError(
+            self.get(
+                type=self.SOURCE_KEY, date='yesterday', timezone='Not/AZone'),
+            ERROR_INVALID_DATE,
+            'date',
+        )
+
+    def test_an_invalid_date_is_refused_before_the_timezone_is_required(self):
+        self.assertApiError(
+            self.get(type=self.SOURCE_KEY, date='2026-13-01'),
+            ERROR_INVALID_DATE,
+            'date',
+        )
+
+    def test_a_timezone_without_a_date_is_refused(self):
+        for value in ('Europe/London', 'UTC', 'Not/AZone', ''):
+            with self.subTest(value=value):
+                self.assertApiError(
+                    self.get(type=self.SOURCE_KEY, timezone=value),
+                    ERROR_TIMEZONE_REQUIRES_DATE,
+                    'timezone',
+                )
+
+    def test_a_date_without_a_timezone_is_refused(self):
+        self.assertApiError(
+            self.get(type=self.SOURCE_KEY, date=SOURCE_DATE_TEXT),
+            ERROR_MISSING_TIMEZONE,
+            'timezone',
+        )
+
+    def test_a_timezone_no_database_can_load_is_refused(self):
+        for value in UNLOADABLE_TIMEZONE_NAMES:
+            with self.subTest(value=value):
+                self.assertApiError(
+                    self.get(
+                        type=self.SOURCE_KEY, date=SOURCE_DATE_TEXT,
+                        timezone=value),
+                    ERROR_INVALID_TIMEZONE,
+                    'timezone',
+                )
+
+    def test_a_loadable_timezone_is_accepted_and_then_finds_no_snapshot(self):
+        for value in ('Europe/London', 'UTC', 'Etc/UTC', 'Pacific/Kiritimati',
+                      'America/Argentina/Buenos_Aires'):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    self.get(
+                        type=self.SOURCE_KEY, date=SOURCE_DATE_TEXT,
+                        timezone=value).status_code,
+                    503,
+                )
+
+    def test_the_whole_query_is_validated_before_the_snapshot_is_read(self):
+        with mock.patch.object(views_v1, 'load_snapshot') as load:
+            for params in (
+                {},
+                {'type': ''},
+                {'type': 'nope'},
+                {'type': self.SOURCE_KEY, 'date': 'yesterday',
+                 'timezone': 'Europe/London'},
+                {'type': self.SOURCE_KEY, 'timezone': 'Europe/London'},
+                {'type': self.SOURCE_KEY, 'date': SOURCE_DATE_TEXT},
+                {'type': self.SOURCE_KEY, 'date': SOURCE_DATE_TEXT,
+                 'timezone': 'Not/AZone'},
+            ):
+                with self.subTest(params=params):
+                    self.client.get(ENDPOINT_PATH, params)
+            load.assert_not_called()
+            self.client.get(ENDPOINT_PATH, {'type': self.SOURCE_KEY})
+            self.assertEqual(load.call_args_list, [mock.call(self.SOURCE_KEY)])
+
+    def test_a_rejected_query_never_reports_availability(self):
+        body = self.assertApiError(
+            self.get(type=self.SOURCE_KEY, date='yesterday'),
+            ERROR_INVALID_DATE,
+            'date',
+        )
+        self.assertNotEqual(body['error']['code'], ERROR_SOURCE_UNAVAILABLE)
+        self.assertEqual(self.get(type=self.SOURCE_KEY).status_code, 503)
+
+    def test_a_rejected_query_carries_only_the_error_envelope(self):
+        queries = (
+            {},
+            {'type': ''},
+            {'type': 'nope'},
+            {'type': self.SOURCE_KEY, 'date': 'yesterday',
+             'timezone': 'Europe/London'},
+            {'type': self.SOURCE_KEY, 'date': SOURCE_DATE_TEXT},
+            {'type': self.SOURCE_KEY, 'timezone': 'Europe/London'},
+            {'type': self.SOURCE_KEY, 'date': SOURCE_DATE_TEXT,
+             'timezone': 'Not/AZone'},
+        )
+        for params in queries:
+            with self.subTest(params=params):
+                response = self.client.get(ENDPOINT_PATH, params)
+                self.assertEqual(response.status_code, 400)
+                body = response.json()
+                self.assertEqual(set(body), {'api_version', 'error'})
+                self.assertEqual(
+                    all_keys(body),
+                    {'api_version', 'error', 'code', 'message', 'field'},
+                )
+                raw = response.content.decode()
+                for token in CLIENT_UNSAFE_BODY_TOKENS:
+                    self.assertNotIn(token, raw)
+
+    def test_a_rejected_query_uses_only_the_documented_error_codes(self):
+        seen = set()
+        queries = (
+            {},
+            {'type': ''},
+            {'type': 'nope'},
+            {'type': self.SOURCE_KEY, 'date': 'yesterday',
+             'timezone': 'Europe/London'},
+            {'type': self.SOURCE_KEY, 'timezone': 'Europe/London'},
+            {'type': self.SOURCE_KEY, 'date': SOURCE_DATE_TEXT},
+            {'type': self.SOURCE_KEY, 'date': SOURCE_DATE_TEXT,
+             'timezone': 'Not/AZone'},
+        )
+        for params in queries:
+            with self.subTest(params=params):
+                code = self.client.get(
+                    ENDPOINT_PATH, params).json()['error']['code']
+                seen.add(code)
+                self.assertIn(code, ERROR_CODES)
+        self.assertEqual(seen, {
+            ERROR_MISSING_TIP_TYPE,
+            ERROR_UNKNOWN_TIP_TYPE,
+            ERROR_INVALID_DATE,
+            ERROR_MISSING_TIMEZONE,
+            ERROR_TIMEZONE_REQUIRES_DATE,
+            ERROR_INVALID_TIMEZONE,
+        })
+
+
+class SourceUnavailableTests(ErrorBodyAssertions, EndpointTestCase):
+    """A valid query with no usable snapshot is a client-safe ``503``, nothing else."""
+
+    def test_a_valid_query_without_a_snapshot_is_unavailable(self):
+        set_snapshot_provider(None)
+        self.assertApiError(
+            self.get(type=self.SOURCE_KEY),
+            ERROR_SOURCE_UNAVAILABLE,
+            None,
+            status=503,
+        )
+
+    def test_a_valid_filtered_query_without_a_snapshot_is_unavailable(self):
+        set_snapshot_provider(None)
+        for params in (
+            {'type': self.SOURCE_KEY, 'date': SOURCE_DATE_TEXT,
+             'timezone': 'Etc/UTC'},
+            {'type': self.SOURCE_KEY, 'date': '1999-01-01',
+             'timezone': 'Etc/UTC'},
+        ):
+            with self.subTest(params=params):
+                self.assertApiError(
+                    self.client.get(ENDPOINT_PATH, params),
+                    ERROR_SOURCE_UNAVAILABLE,
+                    None,
+                    status=503,
+                )
+
+    def test_an_installed_snapshot_turns_the_same_query_into_a_200(self):
+        params = {'type': self.SOURCE_KEY, 'date': SOURCE_DATE_TEXT,
+                  'timezone': 'Etc/UTC'}
+        set_snapshot_provider(None)
+        self.assertEqual(self.client.get(ENDPOINT_PATH, params).status_code, 503)
+        self.seed(self.payload)
+        self.assertEqual(self.client.get(ENDPOINT_PATH, params).status_code, 200)
+
+    def test_a_failed_read_stores_nothing_and_asks_only_once(self):
+        provider = RecordingSnapshotProvider()
+        set_snapshot_provider(provider)
+        self.addCleanup(set_snapshot_provider, None)
+        self.assertEqual(self.get(type=self.SOURCE_KEY).status_code, 503)
+        self.assertEqual(provider.calls, [('load', self.SOURCE_KEY)])
+        self.assertEqual(provider.records, {})
+        self.assertIsNone(load_snapshot(self.SOURCE_KEY))
+
+    def test_a_record_that_is_not_a_mapping_is_the_same_answer(self):
+        for record in ('not a record', ['not', 'a', 'record'], 42, b'bytes'):
+            with self.subTest(record=record):
+                self.seed_record(record)
+                self.assertApiError(
+                    self.get(type=self.SOURCE_KEY),
+                    ERROR_SOURCE_UNAVAILABLE,
+                    None,
+                    status=503,
+                )
+
+    def test_the_unavailable_path_logs_a_safe_reason(self):
+        set_snapshot_provider(None)
+        with self.assertLogs('alltips_scraper.views_v1', level='WARNING') as logs:
+            self.get(
+                type=self.SOURCE_KEY, date=SOURCE_DATE_TEXT, timezone='Etc/UTC')
+        self.assertEqual(len(logs.records), 1)
+        record = logs.records[0]
+        self.assertEqual(record.levelname, 'WARNING')
+        message = record.getMessage()
+        self.assertIn(self.SOURCE_KEY, message)
+        self.assertIn('date_filtered=True', message)
+        self.assertIn('record_present=False', message)
+        for token in CLIENT_UNSAFE_BODY_TOKENS:
+            self.assertNotIn(token, message)
+
+    def test_an_unavailable_body_leaks_no_reason_or_internal_detail(self):
+        set_snapshot_provider(None)
+        for params in ({'type': self.SOURCE_KEY},
+                       {'type': self.SOURCE_KEY, 'date': SOURCE_DATE_TEXT,
+                        'timezone': 'Etc/UTC'}):
+            with self.subTest(params=params):
+                response = self.client.get(ENDPOINT_PATH, params)
+                self.assertEqual(response.status_code, 503)
+                raw = response.content.decode()
+                for token in CLIENT_UNSAFE_BODY_TOKENS:
+                    self.assertNotIn(token, raw)
+                self.assertEqual(
+                    all_keys(response.json()),
+                    {'api_version', 'error', 'code', 'message', 'field'},
+                )
+
+    def test_a_provider_failure_stays_the_providers_own_failure(self):
+        class ExplodingProvider:
+            """A provider whose read fails: the endpoint must not hide it."""
+
+            def load(self, type_key):
+                raise RuntimeError('the provider itself failed')
+
+            def store(self, type_key, payload, *, fetched_at=None):
+                return None
+
+            def clear(self):
+                pass
+
+        set_snapshot_provider(ExplodingProvider())
+        with self.assertRaises(RuntimeError):
+            self.get(type=self.SOURCE_KEY)
+
+
+class BetOfTheDayEndpointEnvelopeTests(
+        KickoffMarkerAssertions, EndpointTestCase):
+    """The published ``match``-unit envelope, its ``filter`` block, and its empties."""
+
+    def test_the_full_envelope_is_the_documented_shape(self):
+        body = self.get(type=self.SOURCE_KEY).json()
+        self.assertEqual(
+            set(body), set(SUCCESS_ENVELOPE_KEYS) | set(OPTIONAL_ENVELOPE_KEYS))
+        self.assertEqual(body['api_version'], API_VERSION)
+        self.assertEqual(body['type'], self.SOURCE_KEY)
+        self.assertEqual(body['unit'], UNIT_MATCH)
+        self.assertEqual(body['count'], 3)
+        self.assertEqual(body['legs_count'], 0)
+        self.assertEqual(len(body['tips']), 3)
+        self.assertEqual(body['source']['label'], 'freesupertips')
+        self.assertEqual(body['source']['date_text'], SOURCE_DATE_TEXT)
+        self.assertEqual(body['source']['fetched_at'], FETCHED_AT_Z)
+
+    def test_every_published_tip_is_a_mapped_match(self):
+        body = self.get(type=self.SOURCE_KEY).json()
+        for tip in body['tips']:
+            with self.subTest(match_title=tip['match_title']):
+                self.assertEqual(set(tip), set(MATCH_UNIT_TIP_KEYS))
+                self.assertKickoffMarkers(tip)
+                self.assertTrue(tip['match_title'])
+                self.assertEqual(tip['source_date_text'], SOURCE_DATE_TEXT)
+
+    def test_an_unfiltered_request_decides_nothing(self):
+        body = self.get(type=self.SOURCE_KEY).json()
+        self.assertEqual(tuple(body['filter']), FILTER_KEYS)
+        self.assertEqual(body['filter'], {
+            'date': None,
+            'timezone': None,
+            'applied': False,
+            'matched': None,
+            'available_date': SOURCE_DATE_TEXT,
+        })
+
+    def test_an_applied_filter_echoes_the_request_and_matches(self):
+        body = self.get(
+            type=self.SOURCE_KEY, date=SOURCE_DATE_TEXT,
+            timezone='Etc/UTC').json()
+        self.assertEqual(tuple(body['filter']), FILTER_KEYS)
+        self.assertEqual(body['filter'], {
+            'date': SOURCE_DATE_TEXT,
+            'timezone': 'Etc/UTC',
+            'applied': True,
+            'matched': True,
+            'available_date': SOURCE_DATE_TEXT,
+        })
+
+    def test_a_matching_filter_changes_nothing_but_the_filter_block(self):
+        plain = self.get(type=self.SOURCE_KEY).json()
+        filtered = self.get(
+            type=self.SOURCE_KEY, date=SOURCE_DATE_TEXT,
+            timezone='Europe/London').json()
+        self.assertEqual(filtered['filter']['timezone'], 'Europe/London')
+        self.assertEqual(filtered['filter']['matched'], True)
+        self.assertEqual(
+            {key: value for key, value in filtered.items() if key != 'filter'},
+            {key: value for key, value in plain.items() if key != 'filter'},
+        )
+
+    def test_a_non_matching_date_is_an_empty_envelope_not_an_error(self):
+        response = self.get(
+            type=self.SOURCE_KEY, date='1999-01-01', timezone='Etc/UTC')
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(
+            set(body), set(SUCCESS_ENVELOPE_KEYS) | set(OPTIONAL_ENVELOPE_KEYS))
+        self.assertEqual(body['tips'], [])
+        self.assertEqual(body['count'], 0)
+        self.assertEqual(body['legs_count'], 0)
+        self.assertEqual(body['filter'], {
+            'date': '1999-01-01',
+            'timezone': 'Etc/UTC',
+            'applied': True,
+            'matched': False,
+            'available_date': SOURCE_DATE_TEXT,
+        })
+
+    def test_an_empty_envelope_keeps_the_provenance_and_the_unit(self):
+        empty = self.get(
+            type=self.SOURCE_KEY, date='1999-01-01', timezone='Etc/UTC').json()
+        full = self.get(type=self.SOURCE_KEY).json()
+        for key in ('api_version', 'type', 'unit', 'source'):
+            with self.subTest(key=key):
+                self.assertEqual(empty[key], full[key])
+
+    def test_the_timezone_is_echoed_and_never_applied(self):
+        unfiltered = self.get(type=self.SOURCE_KEY).json()['tips']
+        body = self.get(
+            type=self.SOURCE_KEY, date=SOURCE_DATE_TEXT,
+            timezone='Pacific/Kiritimati').json()
+        self.assertEqual(body['filter']['timezone'], 'Pacific/Kiritimati')
+        self.assertEqual(body['filter']['matched'], True)
+        self.assertEqual(body['tips'], unfiltered)
+
+    def test_a_snapshot_date_the_payload_does_not_state_is_unusable(self):
+        self.seed(dict(self.payload, **{SOURCE_DATE_KEY: '27 September 2026'}))
+        unfiltered = self.get(type=self.SOURCE_KEY).json()
+        self.assertEqual(unfiltered['count'], 3)
+        self.assertIsNone(unfiltered['filter']['available_date'])
+        self.assertEqual(unfiltered['source']['date_text'], '27 September 2026')
+        filtered = self.get(
+            type=self.SOURCE_KEY, date=SOURCE_DATE_TEXT,
+            timezone='Etc/UTC').json()
+        self.assertEqual(filtered['filter']['applied'], True)
+        self.assertEqual(filtered['filter']['matched'], False)
+        self.assertIsNone(filtered['filter']['available_date'])
+        self.assertEqual(filtered['count'], 0)
+        self.assertEqual(filtered['source']['date_text'], '27 September 2026')
+
+    def test_a_missing_or_unstrict_snapshot_date_is_unusable(self):
+        for value in (None, '', '20260927', '2026-W39-1', 20260927, [], {}):
+            with self.subTest(value=value):
+                payload = dict(self.payload)
+                if value is None:
+                    payload.pop(SOURCE_DATE_KEY, None)
+                else:
+                    payload[SOURCE_DATE_KEY] = value
+                self.seed(payload)
+                body = self.get(type=self.SOURCE_KEY).json()
+                self.assertIsNone(body['filter']['available_date'])
+                self.assertEqual(body['count'], 3)
+
+    def test_no_nested_date_is_ever_used_as_the_snapshot_date(self):
+        payload = dict(self.payload)
+        payload.pop(SOURCE_DATE_KEY, None)
+        for match in payload['matches']:
+            match[SOURCE_DATE_KEY] = SOURCE_DATE_TEXT
+        self.seed(payload)
+        body = self.get(type=self.SOURCE_KEY).json()
+        self.assertIsNone(body['filter']['available_date'])
+        self.assertIsNone(body['source']['date_text'])
+        self.assertEqual(body['tips'][0]['source_date_text'], SOURCE_DATE_TEXT)
+
+    def test_the_response_never_carries_a_legacy_or_entitlement_key(self):
+        body = self.get(
+            type=self.SOURCE_KEY, date=SOURCE_DATE_TEXT,
+            timezone='Etc/UTC').json()
+        self.assertEqual(
+            all_keys(body) & FORBIDDEN_RESPONSE_KEYS, set(), 'forbidden key')
+        self.assertEqual(
+            set(body['source']), {'label', 'date_text', 'fetched_at'})
+
+    def test_a_record_without_a_payload_is_an_empty_but_valid_envelope(self):
+        self.seed_record({
+            'schema_version': 1,
+            'type_key': self.SOURCE_KEY,
+            'fetched_at': FETCHED_AT,
+        })
+        response = self.get(type=self.SOURCE_KEY)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['count'], 0)
+        self.assertEqual(body['tips'], [])
+        self.assertIsNone(body['source']['label'])
+        self.assertIsNone(body['source']['date_text'])
+        self.assertEqual(body['source']['fetched_at'], FETCHED_AT_Z)
+
+    def test_a_naive_or_missing_fetch_stamp_is_simply_omitted(self):
+        for fetched_at in (NAIVE_FETCHED_AT, '2026-09-28T17:12:03Z', None, 0):
+            with self.subTest(fetched_at=fetched_at):
+                self.seed_record({
+                    'schema_version': 1,
+                    'type_key': self.SOURCE_KEY,
+                    'payload': self.payload,
+                    'fetched_at': fetched_at,
+                })
+                body = self.get(type=self.SOURCE_KEY).json()
+                self.assertEqual(set(body['source']), {'label', 'date_text'})
+                self.assertEqual(body['count'], 3)
+
+
+class DailyAccumulatorEndpointEnvelopeTests(
+        KickoffMarkerAssertions, EndpointTestCase):
+    """The same endpoint on the ``card`` unit: nested legs, one contract."""
+
+    SOURCE_KEY = 'daily_accumulator'
+
+    def parse_fixture_payload(self):
+        return utils.parse_accumulator_page(
+            load_fixture(FIXTURE_FOR_SOURCE[self.SOURCE_KEY]),
+            TEST_DATE,
+        )
+
+    def test_the_card_unit_publishes_cards_with_nested_legs(self):
+        body = self.get(type=self.SOURCE_KEY).json()
+        self.assertEqual(body['unit'], UNIT_CARD)
+        self.assertEqual(body['count'], len(self.payload['accumulators']))
+        self.assertEqual(
+            body['legs_count'],
+            sum(len(card['matches']) for card in self.payload['accumulators']),
+        )
+        self.assertTrue(body['tips'])
+        for card in body['tips']:
+            with self.subTest(category=card['category']):
+                self.assertEqual(set(card), set(CARD_UNIT_TIP_KEYS))
+                self.assertEqual(card['legs_count'], len(card['legs']))
+                self.assertNotIn('tip_type', card)
+                for leg in card['legs']:
+                    self.assertEqual(set(leg), set(LEG_KEYS))
+                    self.assertKickoffMarkers(leg)
+
+    def test_the_card_unit_filter_behaves_like_the_match_unit(self):
+        full = self.get(
+            type=self.SOURCE_KEY, date=SOURCE_DATE_TEXT,
+            timezone='Etc/UTC').json()
+        self.assertEqual(full['filter']['matched'], True)
+        self.assertEqual(full['count'], len(self.payload['accumulators']))
+        empty = self.get(
+            type=self.SOURCE_KEY, date='1999-01-01',
+            timezone='Etc/UTC').json()
+        self.assertEqual(empty['filter']['matched'], False)
+        self.assertEqual(empty['count'], 0)
+        self.assertEqual(empty['legs_count'], 0)
+        self.assertEqual(empty['tips'], [])
+
+
+class GenericSourceEndpointEnvelopeTests(EndpointTestCase):
+    """Every generic source answers on the same endpoint, keyed by its own type."""
+
+    def parse_source_payload(self, source):
+        return utils.parse_generic_tips_page(
+            load_fixture(FIXTURE_FOR_SOURCE[source]),
+            GENERIC_TIP_TYPES[source],
+            TEST_DATE,
+        )
+
+    def test_every_generic_source_publishes_its_own_type_and_cards(self):
+        for source in sorted(GENERIC_TIP_TYPES):
+            with self.subTest(source=source):
+                payload = self.parse_source_payload(source)
+                self.seed(payload, source)
+                body = self.get(type=source).json()
+                self.assertEqual(body['type'], source)
+                self.assertEqual(body['unit'], UNIT_CARD)
+                self.assertEqual(body['count'], len(payload['accumulators']))
+                self.assertEqual(
+                    {card['tip_type'] for card in body['tips']},
+                    {GENERIC_TIP_TYPES[source]},
+                )
+
+    def test_every_generic_source_filters_by_its_own_payload_date(self):
+        for source in sorted(GENERIC_TIP_TYPES):
+            with self.subTest(source=source):
+                payload = self.parse_source_payload(source)
+                self.seed(payload, source)
+                matched = self.get(
+                    type=source, date=SOURCE_DATE_TEXT,
+                    timezone='Etc/UTC').json()
+                self.assertEqual(matched['filter']['matched'], True)
+                self.assertEqual(matched['count'], len(payload['accumulators']))
+                empty = self.get(
+                    type=source, date='1999-01-01',
+                    timezone='Etc/UTC').json()
+                self.assertEqual(empty['filter']['matched'], False)
+                self.assertEqual(empty['count'], 0)
+                self.assertEqual(empty['source']['date_text'], SOURCE_DATE_TEXT)
+
+    def test_the_page_tip_type_is_not_a_request_key(self):
+        """``type`` is the source key, not the payload's own ``tip_type`` text.
+
+        Two sources happen to spell both the same way (``btts_and_win`` and
+        ``anytime_goalscorer``), so only the sources whose two spellings differ
+        can pin this: for those, the page's ``tip_type`` is an unknown type even
+        though a snapshot for that page is installed.
+        """
+        for source, page_tip_type in sorted(GENERIC_TIP_TYPES.items()):
+            if page_tip_type in SUPPORTED_TIP_TYPES:
+                continue
+            with self.subTest(page_tip_type=page_tip_type):
+                self.seed(self.parse_source_payload(source), source)
+                response = self.get(
+                    type=page_tip_type, date=SOURCE_DATE_TEXT,
+                    timezone='Etc/UTC')
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.json()['error']['code'], ERROR_UNKNOWN_TIP_TYPE)
+
+
+class UnknownAndDuplicateParameterTests(EndpointTestCase):
+    """Three query keys, and only three: anything else is ignored, not guessed."""
+
+    def test_an_unknown_query_parameter_is_ignored(self):
+        plain = self.get(type=self.SOURCE_KEY).json()
+        for params in (
+            {'type': self.SOURCE_KEY, 'limit': '10'},
+            {'type': self.SOURCE_KEY, 'page': '2', 'offset': '0'},
+            {'type': self.SOURCE_KEY, 'debug': '1', 'api_key': 'x'},
+            {'type': self.SOURCE_KEY, 'filter': 'applied=true', 'unit': 'card'},
+            {'type': self.SOURCE_KEY, 'source': 'other', 'sort': 'odds'},
+        ):
+            with self.subTest(params=params):
+                self.assertEqual(
+                    self.client.get(ENDPOINT_PATH, params).json(), plain)
+
+    def test_an_unknown_parameter_cannot_change_the_filter_or_the_unit(self):
+        body = self.get(
+            type=self.SOURCE_KEY, filter='x', source='y', unit='card').json()
+        self.assertEqual(body['unit'], UNIT_MATCH)
+        self.assertEqual(body['filter'], {
+            'date': None,
+            'timezone': None,
+            'applied': False,
+            'matched': None,
+            'available_date': SOURCE_DATE_TEXT,
+        })
+
+    def test_no_pagination_entitlement_or_legacy_key_is_invented(self):
+        body = self.get(type=self.SOURCE_KEY, limit='1').json()
+        self.assertEqual(all_keys(body) & FORBIDDEN_RESPONSE_KEYS, set())
+        self.assertEqual(
+            set(body), set(SUCCESS_ENVELOPE_KEYS) | set(OPTIONAL_ENVELOPE_KEYS))
+
+    def test_a_duplicated_type_parameter_uses_the_final_value(self):
+        url = f'{ENDPOINT_PATH}?type=not-a-source&type={self.SOURCE_KEY}'
+        body = self.client.get(url).json()
+        self.assertEqual(body['type'], self.SOURCE_KEY)
+        self.assertEqual(body['count'], 3)
+
+    def test_a_duplicated_date_parameter_uses_the_final_value(self):
+        url = (
+            f'{ENDPOINT_PATH}?type={self.SOURCE_KEY}&timezone=Etc/UTC'
+            f'&date=1999-01-01&date={SOURCE_DATE_TEXT}'
+        )
+        body = self.client.get(url).json()
+        self.assertEqual(body['filter']['date'], SOURCE_DATE_TEXT)
+        self.assertEqual(body['filter']['matched'], True)
+        self.assertEqual(body['count'], 3)
+
+    def test_a_duplicated_timezone_parameter_uses_the_final_value(self):
+        url = (
+            f'{ENDPOINT_PATH}?type={self.SOURCE_KEY}&date={SOURCE_DATE_TEXT}'
+            f'&timezone=Not/AZone&timezone=Europe/London'
+        )
+        body = self.client.get(url).json()
+        self.assertEqual(body['filter']['timezone'], 'Europe/London')
+        self.assertEqual(body['filter']['matched'], True)
+
+    def test_a_duplicated_parameter_that_stays_invalid_is_still_refused(self):
+        url = (
+            f'{ENDPOINT_PATH}?type={self.SOURCE_KEY}'
+            f'&date=1999-01-01&date=yesterday'
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['error']['code'], ERROR_INVALID_DATE)
+
+
+class MethodRestrictionTests(EndpointTestCase):
+    """Only ``GET`` is allowed, and that refusal is not a versioned body."""
+
+    def test_every_method_other_than_get_is_refused_with_405(self):
+        for method in ('post', 'put', 'patch', 'delete', 'head'):
+            with self.subTest(method=method):
+                response = getattr(self.client, method)(
+                    ENDPOINT_PATH, {'type': self.SOURCE_KEY})
+                self.assertEqual(response.status_code, 405)
+                self.assertEqual(response.headers['Allow'], 'GET')
+
+    def test_a_405_carries_no_versioned_error_body(self):
+        response = self.client.post(ENDPOINT_PATH, {'type': self.SOURCE_KEY})
+        self.assertEqual(response.content, b'')
+        self.assertNotIn('api_version', response.content.decode())
+
+
+class EndpointVocabularyTests(OfflineGuardMixin, SimpleTestCase):
+    """The endpoint's own vocabulary: three query keys and one legacy source key."""
+
+    def test_the_query_surface_is_exactly_three_parameters(self):
+        self.assertEqual(QUERY_PARAMETERS, ('type', 'date', 'timezone'))
+        self.assertEqual(
+            set(QUERY_PARAMETERS),
+            {
+                views_v1.QUERY_TIP_TYPE,
+                views_v1.QUERY_DATE,
+                views_v1.QUERY_TIMEZONE,
+            },
+        )
+
+    def test_the_filter_block_names_the_documented_keys_in_order(self):
+        self.assertEqual(
+            FILTER_KEYS,
+            ('date', 'timezone', 'applied', 'matched', 'available_date'))
+        self.assertEqual(len(FILTER_KEYS), 5)
+
+    def test_the_legacy_source_key_keeps_its_legacy_name(self):
+        self.assertEqual(LEGACY_SOURCE_KEY, 'source')
+        self.assertEqual(SOURCE_DATE_KEY, 'date')
+        self.assertNotEqual(LEGACY_SOURCE_KEY, 'label')
+
+    def test_the_endpoint_uses_only_the_documented_error_codes(self):
+        codes = (
+            ERROR_MISSING_TIP_TYPE,
+            ERROR_UNKNOWN_TIP_TYPE,
+            ERROR_INVALID_DATE,
+            ERROR_TIMEZONE_REQUIRES_DATE,
+            ERROR_MISSING_TIMEZONE,
+            ERROR_INVALID_TIMEZONE,
+            ERROR_SOURCE_UNAVAILABLE,
+        )
+        self.assertEqual(len(codes), len(set(codes)))
+        self.assertEqual(set(codes), set(ERROR_CODES))
+        for code in codes:
+            with self.subTest(code=code):
+                self.assertEqual(
+                    set(api_error(code, field='type')), {'api_version', 'error'})
