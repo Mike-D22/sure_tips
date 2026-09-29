@@ -13,9 +13,10 @@ Backend repository for the **OddMate** sports-tips product (app label
 
 - `odds/` — Django backend service (the tips scraper API).
   - `odds/odds/` — project settings and URL routing.
-  - `odds/alltips_scraper/` — legacy tips scraping endpoints, plus the offline
-    parser-contract tests and their static HTML fixtures in
-    `odds/alltips_scraper/fixtures/`.
+  - `odds/alltips_scraper/` — legacy tips scraping endpoints, plus the versioned
+    `urls_v1.py`, `views_v1.py`, `readmodel_v1.py` and `serializers_v1.py` modules
+    behind `GET /api/v1/tips/`, the offline parser-contract tests, and their static
+    HTML fixtures in `odds/alltips_scraper/fixtures/`.
   - `odds/customers/` — placeholder app for future account/entitlement work.
 - `docs/` — product decisions, data contract, audit trail, and runbook.
 - `.venv/` — (git-ignored) local virtual environment at the repository root.
@@ -28,6 +29,7 @@ Backend repository for the **OddMate** sports-tips product (app label
 | [`docs/DATA_CONTRACT.md`](docs/DATA_CONTRACT.md) | Frozen output contract of the `alltips_scraper` parsers: envelopes, field dictionary, availability matrix, fields that are **not** available, fixture provenance, and the timezone architecture (UTC storage, device-local display). |
 | [`docs/AUDIT.md`](docs/AUDIT.md) | Sprint 0.5 audit of the `odds/` service. |
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | Setup, run, verify, and operate the service. |
+| [`docs/API_V1_CONTRACT.md`](docs/API_V1_CONTRACT.md) | Implemented contract of `GET /api/v1/tips/`: route, query parameters, date/timezone semantics, response envelope, error codes, and deferrals. |
 
 ## Quick start
 

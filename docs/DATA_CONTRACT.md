@@ -514,6 +514,10 @@ the legacy cache/health contract green.
   dict; fetching belongs to `_fetch_one`.
 * Do not promote a source `<h2>` label to a permanent category. §8 is a proposal
   only.
+* The versioned `GET /api/v1/tips/` surface is additive to these rules: it is the
+  versioned contract for the same six source keys and is documented in
+  `docs/API_V1_CONTRACT.md`. Changing it updates that document and
+  `odds/alltips_scraper/tests_api_v1.py` in the same change.
 
 ## 13. Timezone architecture (authoritative UTC storage, device-local display)
 
@@ -594,7 +598,21 @@ Until such a provider exists, `kickoff_at` stays `null` and
 `kickoff_time_verified` stays `false`. Neither may be back-filled from `date`,
 `time`, `source_date_text`, or `source_time_text`.
 
+Sprint 1C's additive `/api/v1/tips/` serializer surface now publishes
+`source_date_text` and `source_time_text`, while the legacy parser envelopes
+and their pinned key sets remain unchanged. Nothing is persisted yet.
+`kickoff_at` and `kickoff_time_verified` appear in that response only as the
+serializer's unavailable markers (`null` / `false`); they are not values the read
+model publishes. See `docs/API_V1_CONTRACT.md`.
+
 ### 13.4 Key mapping (target naming — not yet applied to the live payload)
+
+> **Sprint 1C status:** the versioned `GET /api/v1/tips/` serializer surface
+> already publishes the target names `source_date_text` and `source_time_text`,
+> and it emits `kickoff_at: null` / `kickoff_time_verified: false` as unavailable
+> markers on every selection. It stores nothing and it does **not** rename the
+> live legacy payload, so this heading and the mapping below still hold unchanged.
+> `docs/API_V1_CONTRACT.md` records that surface.
 
 The names the architecture requires for source text are `source_date_text` and
 `source_time_text`. They map one-to-one onto today's payload keys:
@@ -703,6 +721,10 @@ When Flutter later offers "Today", "Tomorrow", or a selected-date filter:
 Feasibility note: this environment already resolves IANA zones (`tzdata` is
 installed alongside `zoneinfo`, and `ZoneInfo('Europe/London')` loads), so 13.8
 needs no new dependency when it is scheduled.
+
+Sprint 1C's `/api/v1/tips/` accepts `date` and `timezone`, validates the IANA
+timezone name and echoes it in `filter`, but does not implement the §13.8
+timezone-aware UTC day-window query.
 
 **Sprint 1B implements none of 13.8.** The six legacy endpoints accept no date or
 timezone parameter, and adding one is a contract change under §12.
