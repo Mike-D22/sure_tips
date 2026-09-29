@@ -76,7 +76,19 @@ from the on-process cache. **Apart from that flag, a cached response is identica
 to a fresh one.** Error responses are never cached and always contain an `error`
 key.
 
+### 4.1 Versioned endpoint (`/api/v1/tips/`)
+
+`GET /api/v1/tips/` is **not** in the table above and is not part of the legacy
+contract: it has no `cached` flag, it never scrapes, and it answers from an
+in-process snapshot. On a fresh server no snapshot exists yet, so the endpoint
+returns `503` by design instead of scraping. Its contract is
+`docs/API_V1_CONTRACT.md`.
+
 ## 5. Caching semantics
+
+This section covers the legacy routes in section 4 only: the versioned route
+(section 4.1) reads its in-process snapshot and uses no cache backend, no cache key
+and no TTL.
 
 * Decorator: `alltips_scraper.decorators.cache_matches`.
 * Key: `legacy_api:v1:<view_name>:<YYYY-MM-DD>[:<query fingerprint>]`.
@@ -122,7 +134,7 @@ Generate a secret key with:
 ```powershell
 .\.venv\Scripts\python.exe .\odds\manage.py check                              # expect: no issues
 .\.venv\Scripts\python.exe .\odds\manage.py migrate                            # currently: no migrations to apply
-.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 89 tests, all passing
+.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 307 tests, all passing
 ```
 
 The app label is required. `odds/` is not a Python package, so a bare
