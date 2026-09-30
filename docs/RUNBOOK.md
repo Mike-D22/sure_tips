@@ -79,16 +79,70 @@ key.
 ### 4.1 Versioned endpoint (`/api/v1/tips/`)
 
 `GET /api/v1/tips/` is **not** in the table above and is not part of the legacy
-contract: it has no `cached` flag, it never scrapes, and it answers from an
-in-process snapshot. On a fresh server no snapshot exists yet, so the endpoint
-returns `503` by design instead of scraping. Its contract is
-`docs/API_V1_CONTRACT.md`.
+contract: it has no `cached` flag, it never scrapes, and it answers from a stored
+snapshot. The request path only ever reads, so a server that holds no usable
+snapshot returns `503` by design instead of scraping; section 4.2 is how a
+snapshot gets stored. Its contract is `docs/API_V1_CONTRACT.md`.
+
+### 4.2 Populating the snapshot (`manage.py refresh_tips`)
+
+The one supported writer is the out-of-band management command `refresh_tips`.
+Nothing in the request path imports it, so no request can start a fetch, a scrape,
+a refresh or a cache fill. The snapshot table has to exist first:
+
+```powershell
+.\.venv\Scripts\python.exe .\odds\manage.py migrate       # creates the snapshot table
+.\.venv\Scripts\python.exe .\odds\manage.py refresh_tips  # fetches and stores the types
+```
+
+Without an option, every type the versioned registry publishes is refreshed, in
+the registry's own order. `--type TIP_TYPE` refreshes only that type and may be
+repeated to refresh several; the selection is de-duplicated and refreshed in the
+registry's own order rather than the order the options were given, and a value the
+registry does not publish is refused before anything is fetched, with exit status
+`2` and without printing a report line.
+
+One line is printed per type, in the order the types were refreshed:
+
+```text
+type=<key> outcome=<ok|empty> state=<new|unchanged|changed> count=<n> [legs=<n>] fetched_at=<UTC instant>
+type=<key> outcome=failed reason=<token>
+```
+
+* `outcome=<ok|empty>`: `ok` is a payload that describes tips, and `empty` is the
+  pinned "no cards" answer its own source key produces, which is published as a
+  result: the endpoint answers that type with `200` and no tips. Any other payload
+  that describes no tips is refused instead.
+* `count` is the number of entries the payload lists (`matches` for a `match` unit,
+  `accumulators` for a `card` unit), and `legs` is the total the cards state for
+  their own legs. `legs=` is printed for the `card` unit only, because a `match`
+  unit states no legs at all.
+* `state` compares the fetched payload with the one already stored: `new` when
+  nothing was stored for the type, `unchanged` when the two digests match, and
+  `changed` when they differ. An unchanged payload is still stored again with the
+  fresh instant, so a run always publishes the fetch that just happened.
+* Each type is stamped with its own instant, taken when its own fetch was accepted,
+  so a row records when that answer was read rather than when the run started. A
+  refusal carries no instant at all.
+* `--dry-run` runs every selected type through the whole pipeline short of the
+  write: each is fetched, serialised, digested and compared, and the state it would
+  have written is printed with `dry-run:` in front of it. No row is written or
+  replaced, so a dry run is the safe way to ask what a refresh would do.
+* A refused type prints its key, `outcome=failed` and one fixed reason token, and
+  nothing else: no state, no counts, no instant. The same refusal is logged once
+  through `alltips_scraper.refresh_v1`.
+* Types are refreshed one at a time, so a refusal affects only its own type: every
+  type that succeeded stays stored.
+* The exit status is `0` when every selected type was accepted (`ok`, or `empty` for
+  a pinned empty payload; a dry run accepts without writing), `1` when any type was
+  refused, and `2` when `--type` named a type the registry does not publish, which is
+  how a scheduler or a cron job learns the outcome.
 
 ## 5. Caching semantics
 
 This section covers the legacy routes in section 4 only: the versioned route
-(section 4.1) reads its in-process snapshot and uses no cache backend, no cache key
-and no TTL.
+(section 4.1) reads its stored snapshot and uses no cache backend, no cache key and
+no TTL.
 
 * Decorator: `alltips_scraper.decorators.cache_matches`.
 * Key: `legacy_api:v1:<view_name>:<YYYY-MM-DD>[:<query fingerprint>]`.
@@ -133,8 +187,8 @@ Generate a secret key with:
 
 ```powershell
 .\.venv\Scripts\python.exe .\odds\manage.py check                              # expect: no issues
-.\.venv\Scripts\python.exe .\odds\manage.py migrate                            # currently: no migrations to apply
-.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 307 tests, all passing
+.\.venv\Scripts\python.exe .\odds\manage.py migrate                            # creates the v1 snapshot table
+.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 499 tests, all passing
 ```
 
 The app label is required. `odds/` is not a Python package, so a bare
@@ -145,8 +199,14 @@ The suite runs **entirely offline**: `tests.py` mocks every scraper handler;
 `tests_parser_contract.py` calls the real parser functions against the static,
 synthetic HTML in `odds/alltips_scraper/fixtures/` (read with `Path.read_bytes`);
 and `tests_offline_guard.py` disables the socket layer for every test and proves
-the fetch path fails closed with an error envelope instead of raising. Nothing
-touches `freesupertips.com` or any other host, and no test refreshes or
+the fetch path fails closed with an error envelope instead of raising.
+
+The versioned surface is offline too: `tests_api_v1.py` reads through a provider
+double it installs itself, `tests_storage_v1.py` and `tests_startup_v1.py`
+exercise the real table in the test database, and `tests_refresh_v1.py` fakes the
+fetch layer and disables the socket layer as well.
+
+Nothing touches `freesupertips.com` or any other host, and no test refreshes or
 regenerates a fixture. The contract these tests pin is documented in
 `docs/DATA_CONTRACT.md`; fixture provenance and the refresh procedure live in
 `odds/alltips_scraper/fixtures/README.md`.

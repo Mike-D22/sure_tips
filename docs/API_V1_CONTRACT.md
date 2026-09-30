@@ -1,6 +1,8 @@
 # API v1 contract — `GET /api/v1/tips/`
 
 Date: 2026-09-28 · Sprint 1C (versioned tips endpoint)
+Snapshot storage revised: 2026-09-29 (durable row store and out-of-band writer; the
+request path is unchanged)
 
 | Item | Value |
 | --- | --- |
@@ -8,7 +10,9 @@ Date: 2026-09-28 · Sprint 1C (versioned tips endpoint)
 | Route | `GET /api/v1/tips/` |
 | Namespaced route name | `tips_v1:tips` |
 | Versioned modules | `urls_v1.py`, `views_v1.py`, `readmodel_v1.py`, `serializers_v1.py` |
-| Contract tests | `odds/alltips_scraper/tests_api_v1.py` |
+| Snapshot store (`readmodel_v1` provider) | `storage_v1.py`, installed by `apps.AlltipsScraperConfig.ready()` |
+| Out-of-band writer (not in the request path) | `refresh_v1.py`, driven by `manage.py refresh_tips` |
+| Contract tests | `odds/alltips_scraper/tests_api_v1.py`, plus `tests_storage_v1.py`, `tests_startup_v1.py` and `tests_refresh_v1.py` for the store, its install and the writer |
 
 This document records the implemented contract of the versioned endpoint only. The
 legacy surface it sits beside is documented in `docs/RUNBOOK.md` and frozen in
@@ -143,26 +147,35 @@ Every error body has the same shape: `api_version` plus an `error` object whose
 
 ## 6. Operational status and deferrals
 
-* The snapshot lives in **process-local in-memory state**: there is no database
-  table, no file store and no shared cache behind the route. State is per process, so
-  a restarted server, another worker or a separate process has its own snapshots.
-* **No production writer exists**: nothing in the request path stores a snapshot, so
-  a freshly started server has none. A fresh server answering `503`
-  `source_unavailable` is the designed behaviour, not a defect.
-* No request can trigger a scrape, a refresh, a cache fill or any network call, and
-  the route never writes. `filter.timezone` is echoed but never applied, so a `200`
-  is not evidence that a timezone-aware day window was honoured.
+* The snapshot is read through the `readmodel_v1` seam, whose installed provider is
+  chosen once per process at startup (`apps.AlltipsScraperConfig.ready()`): the
+  durable `storage_v1.DatabaseSnapshotProvider`, which keeps one row per type key in
+  the `SnapshotV1` table. A stored row is either usable or absent — a row that fails
+  its own record version, digest, payload shape or timestamp is answered as "no
+  snapshot", never published and never a `500`.
+* **The request path is read-only and holds no writer**: no request stores, clears or
+  refreshes a snapshot, and none performs a network call. A server whose store holds
+  no usable row answers `503` `source_unavailable`, which is the designed behaviour,
+  not a defect.
+* The snapshot is populated **out of band**, by `manage.py refresh_tips` driving
+  `refresh_v1.py`. That writer is deliberately outside this request-path contract and
+  no route can reach it; it is documented in `docs/RUNBOOK.md` section 4.2.
+* `filter.timezone` is echoed but never applied, so a `200` is not evidence that a
+  timezone-aware day window was honoured.
 * Deferred, and deliberately not implemented in this sprint:
-  * persistence of snapshots, and any shared state between processes;
-  * a refresh or ingestion path that populates the snapshot;
-  * history, versioning or retention of past snapshots;
+  * any write a request can trigger, and any in-request refresh or ingestion path;
+  * any shared or external cache between processes;
+  * history, versioning or retention of past snapshots — a refresh replaces the
+    type's own row rather than keeping the one it replaced;
   * the actual timezone-aware UTC day-window filtering of §13.8 in
     `docs/DATA_CONTRACT.md`.
 
 ## 7. Verification and compatibility
 
 The contract is covered by offline tests in
-`odds/alltips_scraper/tests_api_v1.py`.
+`odds/alltips_scraper/tests_api_v1.py`, with the snapshot store, its startup install
+and the out-of-band writer covered by `tests_storage_v1.py`, `tests_startup_v1.py`
+and `tests_refresh_v1.py`.
 
 ```powershell
 .\.venv\Scripts\python.exe .\odds\manage.py check
@@ -174,8 +187,9 @@ the local development server; no external host, upstream URL or configuration va
 is recorded in this document.
 
 ```powershell
-# Local-development verification only. A fresh server returns
-# 503 source_unavailable by design: no writer populates the v1 snapshot yet.
+# Local-development verification only. A server answers 503
+# source_unavailable by design until manage.py refresh_tips has stored a row
+# for that type (docs/RUNBOOK.md section 4.2).
 curl.exe -i "http://127.0.0.1:8000/api/v1/tips/?type=bet_of_the_day"
 ```
 
