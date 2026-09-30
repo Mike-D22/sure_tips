@@ -480,7 +480,7 @@ From the repository root:
 ```powershell
 .\\.venv\\Scripts\\python.exe .\\odds\\manage.py check
 .\\.venv\\Scripts\\python.exe .\\odds\\manage.py test alltips_scraper -v 2 --noinput
-git --no-prefix diff --check
+git diff --check
 ```
 
 Expected: no system-check issues, every test passes, and a clean whitespace check.
@@ -517,7 +517,10 @@ the legacy cache/health contract green.
 * The versioned `GET /api/v1/tips/` surface is additive to these rules: it is the
   versioned contract for the same six source keys and is documented in
   `docs/API_V1_CONTRACT.md`. Changing it updates that document and
-  `odds/alltips_scraper/tests_api_v1.py` in the same change.
+  `odds/alltips_scraper/tests_api_v1.py` in the same change. Its out-of-band writer,
+  `refresh_v1.py` run by `manage.py refresh_tips`, stores the source envelope as
+  fetched and changes nothing in this contract; it is documented in
+  `docs/RUNBOOK.md` section 4.2.
 
 ## 13. Timezone architecture (authoritative UTC storage, device-local display)
 

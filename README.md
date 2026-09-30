@@ -14,9 +14,11 @@ Backend repository for the **OddMate** sports-tips product (app label
 - `odds/` — Django backend service (the tips scraper API).
   - `odds/odds/` — project settings and URL routing.
   - `odds/alltips_scraper/` — legacy tips scraping endpoints, plus the versioned
-    `urls_v1.py`, `views_v1.py`, `readmodel_v1.py` and `serializers_v1.py` modules
-    behind `GET /api/v1/tips/`, the offline parser-contract tests, and their static
-    HTML fixtures in `odds/alltips_scraper/fixtures/`.
+    `urls_v1.py`, `views_v1.py`, `readmodel_v1.py`, `serializers_v1.py`,
+    `storage_v1.py` and `refresh_v1.py` modules behind `GET /api/v1/tips/` (with
+    `management/commands/refresh_tips.py` as the only writer of a snapshot), the
+    offline parser-contract tests, and their static HTML fixtures in
+    `odds/alltips_scraper/fixtures/`.
   - `odds/customers/` — placeholder app for future account/entitlement work.
 - `docs/` — product decisions, data contract, audit trail, and runbook.
 - `.venv/` — (git-ignored) local virtual environment at the repository root.
