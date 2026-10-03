@@ -1,0 +1,81 @@
+# ---------------------------------------------------------------------------
+# Fly.io configuration TEMPLATE for the OddMate tips API (sure_tips / odds).
+#
+# This file is a template, not an identity. It deliberately names no app, no
+# hostname, no region and no machine size: those are chosen only when the Fly
+# app is actually created (`fly apps create <name>`), which has not happened.
+# Replace every <placeholder> below - `app`, `primary_region` and the
+# ALLOWED_HOSTS host - with the real values at that point, then deploy.
+# Deploying first fails fast instead of shipping under a guessed name.
+#
+# Nothing secret belongs in this file. SECRET_KEY and DATABASE_URL are Fly
+# secrets (`fly secrets set ...`, `fly postgres attach ...`); only the
+# non-secret values below live here, where anyone with the repository can read
+# them. DEFAULT_FROM_EMAIL and SCRAPE_URL are non-secret only while they carry
+# no credential: a real SMTP account's password, or a scrape URL with a token in
+# it, belongs in `fly secrets set`.
+#
+# See docs/DEPLOYMENT.md for the full procedure.
+# ---------------------------------------------------------------------------
+
+app = "<staging-or-production-app-name>"
+primary_region = "<fly-region>"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret runtime configuration. DEBUG is deliberately absent (settings.py
+# defaults it to False) and so is CORS_ALLOW_ALL_ORIGINS (defaults to False):
+# setting either here would serve a debug-mode, wildcard-CORS API.
+[env]
+  PORT = "8080"
+  # Must contain the real <app>.fly.dev host: a request whose Host header is not
+  # listed answers 400 DisallowedHost. The local hosts stay so the same image
+  # can be run and curled on this machine.
+  ALLOWED_HOSTS = "<staging-or-production-app-name>.fly.dev,localhost,127.0.0.1,[::1]"
+  DEFAULT_FROM_EMAIL = "no-reply@example.com"
+  SCRAPE_URL = "https://www.freesupertips.com"
+
+  # Deployment transport policy. settings.py reads each one on its own and
+  # defaults to the safe value (all off, HSTS 0), so nothing here is inferred
+  # from DEBUG and a local odds/.env keeps serving plain HTTP. Not secrets: they
+  # describe the transport policy, not a credential.
+  SECURE_SSL_REDIRECT = "True"
+  SESSION_COOKIE_SECURE = "True"
+  CSRF_COOKIE_SECURE = "True"
+  SECURE_HSTS_SECONDS = "31536000"
+  SECURE_HSTS_INCLUDE_SUBDOMAINS = "True"
+  SECURE_HSTS_PRELOAD = "True"
+
+[deploy]
+  # Runs once per deploy, in a one-off machine built from this image, before the
+  # new release takes traffic. Migrations only: no fixture load, no snapshot
+  # refresh of any kind (those stay out of band and are not scheduled here).
+  release_command = "python manage.py migrate --noinput"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # One machine always runs, so a cold start never adds latency to a client
+  # request; `auto_stop_machines = "off"` is the approved initial availability
+  # decision (machines are not stopped while idle).
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 50
+    soft_limit = 25
+
+  # Liveness uses the existing legacy endpoint; sprint 1E-A1 adds no /healthz.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/health/"
+
+# No [[vm]] block and no machine size: both are chosen when the app is created
+# (and revisited once the real load is known), so this template commits no
+# sizing policy.

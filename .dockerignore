@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# Build-context exclusions for `docker build` / `fly deploy`.
+#
+# This list is a security control, not an optimisation. The build context is the
+# repository root, which holds odds/.env (real secret key and SMTP values),
+# odds/db.sqlite3 (a local database) and three virtual environments. Anything
+# not excluded here can be copied into an image layer.
+#
+# The image needs odds/ (source plus requirements.txt) and nothing else.
+# ---------------------------------------------------------------------------
+
+# --- VCS / editors ---------------------------------------------------------
+.git
+.gitignore
+**/.gitignore
+.github
+.vscode
+.idea
+.vs
+
+# --- Secrets / local environment ------------------------------------------
+.env
+**/.env
+.env.*
+**/.env.*
+
+# --- Local databases -------------------------------------------------------
+*.sqlite3
+*.sqlite3-journal
+**/db.sqlite3
+
+# --- Virtual environments --------------------------------------------------
+.venv/
+**/.venv/
+venv/
+**/venv/
+myvenv/
+**/myvenv/
+env/
+**/env/
+
+# --- Python bytecode / caches ---------------------------------------------
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Django runtime artifacts ---------------------------------------------
+*.log
+**/*.log
+staticfiles/
+media/
+
+# --- Deployment descriptors and documentation (not needed in the image) ----
+Dockerfile
+.dockerignore
+fly.toml
+docs/
+README.md
+
+# --- Scratch ---------------------------------------------------------------
+tmp/
+scratch/
+*.zip
+*.tar.gz

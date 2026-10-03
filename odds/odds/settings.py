@@ -1,5 +1,7 @@
 
 from pathlib import Path
+
+import dj_database_url
 from decouple import Csv, config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -91,8 +93,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'odds.wsgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+# Email -----------------------------------------------------------------------
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
@@ -102,12 +103,46 @@ EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL')
 
+# Database --------------------------------------------------------------------
+# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+#
+# Local development and the test suite use the git-ignored SQLite file in this
+# directory, so a fresh checkout runs with no database server. A deployed
+# service sets DATABASE_URL instead (Fly Postgres attaches one automatically)
+# and that URL always wins: dj-database-url turns it into the mapping Django
+# expects. DATABASE_URL carries the database password, so it is a secret - it is
+# never written into this file, odds/.env.example or fly.toml.
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
+
+DATABASE_URL = config('DATABASE_URL', default='')
+if DATABASE_URL:
+    DATABASES['default'] = dj_database_url.parse(DATABASE_URL)
+    if DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
+        # Pooling-safe connection handling, PostgreSQL only. A deployment reaches
+        # the database through a pooler, so this process must not hold connection
+        # state that the pooler then reassigns:
+        #   CONN_MAX_AGE = 0        every request gets its own connection
+        #                           instead of reusing one the pooler may hand
+        #                           to someone else;
+        #   DISABLE_SERVER_SIDE_CURSORS = True
+        #                           no named cursors that outlive the statement
+        #                           that opened them;
+        #   OPTIONS['prepare_threshold'] = None
+        #                           no automatic prepared statements, which are
+        #                           unsafe under transaction pooling.
+        # None of this is applied to the SQLite default above: it has no server,
+        # no pooler and none of those options.
+        DATABASES['default']['CONN_MAX_AGE'] = 0
+        DATABASES['default']['DISABLE_SERVER_SIDE_CURSORS'] = True
+        options = dict(DATABASES['default'].get('OPTIONS') or {})
+        options['prepare_threshold'] = None
+        DATABASES['default']['OPTIONS'] = options
 
 
 # Password validation
@@ -145,6 +180,39 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+
+# Deployment security ---------------------------------------------------------
+# Six explicit, independent environment values, each with a safe local default.
+# Nothing here is derived from DEBUG, so DEBUG=False can never silently switch
+# HTTPS redirect, secure-only cookies or HSTS on, and a deployment that forgets
+# to set them serves a plain-HTTP-safe configuration rather than a half-applied
+# one. A deployment sets all six in fly.toml's [env] block - they describe the
+# transport policy and carry no credential, so they are not secrets; local
+# development leaves them alone. docs/RUNBOOK.md 7 and 11 explain how the
+# resulting configuration is checked and what a deployment sets.
+
+SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=False, cast=bool)
+SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=False, cast=bool)
+CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=False, cast=bool)
+
+# Seconds of HSTS; 0 sends no Strict-Transport-Security header at all. The
+# `preload` directive is only a header value - a domain has to be submitted to
+# the browser preload list separately.
+SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=0, cast=int)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = config(
+    'SECURE_HSTS_INCLUDE_SUBDOMAINS', default=False, cast=bool
+)
+SECURE_HSTS_PRELOAD = config('SECURE_HSTS_PRELOAD', default=False, cast=bool)
+
+# Fly terminates TLS at its edge and forwards the original scheme in
+# X-Forwarded-Proto. Django has to trust that header before it can recognise an
+# https request, because SECURE_SSL_REDIRECT without it would redirect a request
+# that already arrived over TLS, forever. Trusting it is only sound while this
+# process runs behind the platform proxy (the container is never exposed
+# directly), so it is deliberately not something a request from anywhere else
+# can claim.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 
 # Logging ---------------------------------------------------------------------

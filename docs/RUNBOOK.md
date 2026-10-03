@@ -39,6 +39,12 @@ Copy-Item odds\.env.example odds\.env
 The repository-root `.venv/` and `odds/.env` are both git-ignored; never commit
 either.
 
+The same file also pins the container-only dependencies (`gunicorn`,
+`psycopg[binary]`, `dj-database-url`). `gunicorn` cannot even be imported on
+Windows — it needs the POSIX-only `fcntl` module — which is expected: local
+development runs the Django development server (section 3) while the container
+runs gunicorn.
+
 To confirm the environment (from the repository root):
 
 ```powershell
@@ -172,10 +178,27 @@ Everything is read from `odds/.env` via `python-decouple`; see
 | `ALLOWED_HOSTS` | no | `localhost,127.0.0.1,[::1]` | CSV; no wildcard default |
 | `CORS_ALLOW_ALL_ORIGINS` | no | `False` | dev-only opt-in |
 | `CORS_ALLOWED_ORIGINS` | no | `http://localhost:8000,http://127.0.0.1:8000` | CSV; ignored while the wildcard is on |
+| `DATABASE_URL` | no | empty (SQLite `odds/db.sqlite3`) | PostgreSQL URL; always wins when set. A deployment secret — `fly postgres attach` sets it, and it never belongs in a tracked file. PostgreSQL is configured pooling-safe (no connection reuse, no server-side cursors, no prepared statements); the SQLite default carries none of it. |
 | `DEFAULT_FROM_EMAIL` | yes | — | no default |
 | `SCRAPE_URL` | yes | — | upstream base URL, read at import time |
 | `FREESUPERTIPS_ENABLE_VERIFICATION` | no | `False` | settlement is not implemented; keep off |
 | `DJANGO_LOG_LEVEL` / `ALLTIPS_LOG_LEVEL` | no | `INFO` | console logging levels |
+| `SECURE_SSL_REDIRECT` | no | `False` | transport: redirect plain HTTP to HTTPS |
+| `SESSION_COOKIE_SECURE` | no | `False` | transport: secure-only session cookie |
+| `CSRF_COOKIE_SECURE` | no | `False` | transport: secure-only CSRF cookie |
+| `SECURE_HSTS_SECONDS` | no | `0` | transport: HSTS lifetime in seconds (`0` sends no header) |
+| `SECURE_HSTS_INCLUDE_SUBDOMAINS` | no | `False` | transport: HSTS `includeSubDomains` |
+| `SECURE_HSTS_PRELOAD` | no | `False` | transport: HSTS `preload` header value |
+
+The six transport values are explicit and independent: `settings.py` reads each
+one on its own and derives none of them from `DEBUG`, so the defaults above are
+exactly what an unset environment gets and plain HTTP keeps working locally. A
+deployment sets all six in `fly.toml` `[env]` — they describe the transport
+policy and carry no credential, so they are **not** secrets.
+`SECURE_PROXY_SSL_HEADER` is the one transport setting that is not an environment
+value: it is unconditional, and it is only sound because the container is never
+exposed except behind Fly's TLS proxy. `docs/DEPLOYMENT.md` §3 lists the whole
+set.
 
 Generate a secret key with:
 
@@ -187,9 +210,25 @@ Generate a secret key with:
 
 ```powershell
 .\.venv\Scripts\python.exe .\odds\manage.py check                              # expect: no issues
-.\.venv\Scripts\python.exe .\odds\manage.py migrate                            # creates the v1 snapshot table
-.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 499 tests, all passing
+.\.venv\Scripts\python.exe .\odds\manage.py makemigrations --check --dry-run   # expect: No changes detected
+.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 515 tests, all passing
+.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper.tests_deployment_v1 --noinput  # the 15 deployment tests
+
+# The deployment configuration check. A deployed process never sets DEBUG, and it
+# does set the six transport values, so the check runs with them too.
+$env:DEBUG='False'
+$env:SECURE_SSL_REDIRECT='True'; $env:SESSION_COOKIE_SECURE='True'; $env:CSRF_COOKIE_SECURE='True'
+$env:SECURE_HSTS_SECONDS='31536000'; $env:SECURE_HSTS_INCLUDE_SUBDOMAINS='True'; $env:SECURE_HSTS_PRELOAD='True'
+.\.venv\Scripts\python.exe .\odds\manage.py check --deploy  # expect: no issues
 ```
+
+The last four lines are the deployment configuration check. They run with
+`DEBUG=False` and the six transport values set, which is exactly what a
+deployment sets (`fly.toml` `[env]`). Left at their local defaults the same check
+reports four warnings — `security.W004` (HSTS), `W008` (`SECURE_SSL_REDIRECT`),
+`W012` (session cookie) and `W016` (CSRF cookie) — because those are values a
+deployment is expected to state, not values `settings.py` should assume on its
+behalf. Section 11 and `docs/DEPLOYMENT.md` describe what they protect.
 
 The app label is required. `odds/` is not a Python package, so a bare
 `manage.py test` runs Django's discovery against the repository root, finds
@@ -235,6 +274,10 @@ Never log `SECRET_KEY`, SMTP credentials, or `SCRAPE_URL` values.
 | `UndefinedValueError: SECRET_KEY not found` | `odds/.env` missing; copy it from `.env.example`. |
 | `UndefinedValueError: SCRAPE_URL not found` | same — `utils.py` reads it at import time. |
 | `DisallowedHost` | add the host to `ALLOWED_HOSTS` in `odds/.env`. |
+| `ModuleNotFoundError: dj_database_url` | dependencies are out of date — re-run setup step 3 (sprint 1E-A1 added the pin). |
+| `ModuleNotFoundError: psycopg` | same — the pinned `psycopg[binary]` is what the PostgreSQL engine needs. |
+| `400 DisallowedHost` from a deployed host | add the host to `fly.toml` `[env] ALLOWED_HOSTS` and redeploy; a deployment never reads `odds/.env`. |
+| Local requests redirect to an `https://` URL | one of the six transport values is set in `odds/.env` (usually `SECURE_SSL_REDIRECT`); unset it locally — those six describe a deployment's transport policy. |
 | `uv venv` exits non-zero: "already exists" | the repository-root `.venv` is present; use `uv venv --clear --python 3.12 .venv` to rebuild. |
 | PowerShell refuses to run `Activate.ps1` | not needed — call the interpreter directly (`.\.venv\Scripts\python.exe`); never activate a virtual environment or change the execution policy. |
 
@@ -265,4 +308,55 @@ Never log `SECRET_KEY`, SMTP credentials, or `SCRAPE_URL` values.
   commit. No history was rewritten and nothing was pushed during Sprint 0.5.
 * See `docs/AUDIT.md` for the pre-change inventory, the envelope defect analysis,
   and the deliberate backlog.
+* Deployment files are tracked at the repository root — `Dockerfile`,
+  `.dockerignore` and `fly.toml` — and no secret may ever be written into them:
+  `SECRET_KEY` and `DATABASE_URL` are Fly secrets, while `DEFAULT_FROM_EMAIL`,
+  `SCRAPE_URL`, `ALLOWED_HOSTS`, `PORT` and the six transport values
+  (`SECURE_SSL_REDIRECT`, `SESSION_COOKIE_SECURE`, `CSRF_COOKIE_SECURE`,
+  `SECURE_HSTS_SECONDS`, `SECURE_HSTS_INCLUDE_SUBDOMAINS`,
+  `SECURE_HSTS_PRELOAD`) are deliberately readable `[env]` values. `.dockerignore` is a security control, not an optimisation: it is what
+  keeps `odds/.env`, `odds/db.sqlite3` and the virtual environments out of an
+  image layer. See `docs/DEPLOYMENT.md`.
+
+## 11. Deployment (Fly.io)
+
+The service is containerised and its Fly configuration is committed, but **no
+deployment was performed in sprint 1E-A1**: the image was never built in that
+environment (no Docker CLI), and no `fly` command was run. The full procedure,
+including the image-safety checks, is `docs/DEPLOYMENT.md`. The short version:
+
+```powershell
+fly apps create <app-name>                           # then put the same name in fly.toml [app]
+fly postgres create --name oddmate-db
+fly postgres attach --app <app-name> oddmate-db       # DATABASE_URL, as a secret
+fly secrets set SECRET_KEY=<generated>                # see section 6
+fly deploy                                            # release_command: migrate only
+curl.exe https://<app-name>.fly.dev/api/health/       # the app name chosen above
+```
+
+What a deployment relies on, and what it deliberately does not do:
+
+* The container runs `gunicorn odds.wsgi:application` as the unprivileged
+  `appuser` (uid 10001) on port 8080. It never runs `manage.py runserver`, never
+  runs `collectstatic`, and never serves static files.
+* `DATABASE_URL` selects PostgreSQL; with it unset the git-ignored SQLite file is
+  the local default. Migrations are the only release action — no snapshot
+  refresh, no fixture load.
+* Liveness is `/api/health/`; there is no `/healthz`. `GET /api/v1/tips/` still
+  answers `503` until `manage.py refresh_tips` has stored a snapshot, and nothing
+  schedules that command.
+* Transport security is explicit, never inferred from `DEBUG`: `fly.toml` `[env]`
+  sets `SECURE_SSL_REDIRECT`, secure session/CSRF cookies and one-year HSTS
+  (with subdomains and preload), while a local `odds/.env` leaves the same six
+  values unset and keeps serving plain HTTP. `SECURE_PROXY_SSL_HEADER` is
+  unconditional, so Django recognises the `https` scheme Fly's edge forwards in
+  `X-Forwarded-Proto`.
+* `fly.toml` is a template, not an identity: `app`, `primary_region` and the
+  `<app>.fly.dev` host in `[env] ALLOWED_HOSTS` are placeholders, and no `[[vm]]`
+  block or machine size is committed. All four are chosen when the app is created
+  (`fly apps create <name>`, `fly scale`), and `fly deploy` against an unfilled
+  template fails fast rather than shipping under a guessed name.
+* `odds/alltips_scraper/tests_deployment_v1.py` pins all of the above, so a
+  change to the Dockerfile, `.dockerignore`, `fly.toml` or the pinned
+  dependencies has to be deliberate.
 

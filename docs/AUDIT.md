@@ -357,8 +357,9 @@ odds/.gitignore:11:.venv/           odds/.venv         <- ignored
   covers Dart/Flutter build output as a placeholder.
 * Auth, rate limiting and per-tier gating on the tips endpoints — the legacy six
   remain unauthenticated public GETs, as they are today.
-* `check --deploy` hardening (HSTS / SSL redirect / secure cookies) — deployment
-  sprint.
+* `check --deploy` hardening (HSTS / SSL redirect / secure cookies) — **done in
+  sprint 1E-A1** (section 7): the settings follow `DEBUG`, so
+  `manage.py check --deploy` is clean with `DEBUG=False`.
 * Shared cache backend (Redis/Memcached): the default `LocMemCache` is
   per-process, so with multiple workers each process warms its own cache and the
   date-scoped keys are per-process. Correct, but not shared.
@@ -370,3 +371,109 @@ odds/.gitignore:11:.venv/           odds/.venv         <- ignored
   terms **Free** / **Premium** (never VIP). The *implementation* of pricing,
   subscriptions, payments, entitlements, and result settlement remains future
   work and does not block this sprint.
+
+
+## 7. Sprint 1E-A1 — deployment readiness (2026-10-02)
+
+Sprint 1E-A1 makes the service *deployable*: it adds the container and the Fly
+configuration, PostgreSQL through `DATABASE_URL`, and the pins the image needs.
+**Nothing was deployed** — no `fly` command ran against a real app, no image was
+published, and the Dockerfile was not built (the sprint environment had no Docker
+CLI). This section is the sprint record; `docs/DEPLOYMENT.md` is the procedure.
+
+| Item | Value |
+| --- | --- |
+| Branch | `main` at `40d5b24` (the sprint 1D merge) |
+| Scope | container, build context, Fly configuration, `DATABASE_URL`, pins, tests, docs |
+| Deployment performed | **no** — configuration only |
+| Suite | 500 → 515 tests, all passing |
+| `check --deploy` | 4 warnings → no issues (with `DEBUG=False` and the six transport values) |
+
+### 7.1 What changed
+
+* **Container.** `Dockerfile` at the repository root: `python:3.12-slim`,
+  dependencies installed from `odds/requirements.txt`, the service directory
+  copied to `/app/odds`, an unprivileged `appuser` (uid 10001), `EXPOSE 8080`, and
+  a `gunicorn odds.wsgi:application` `CMD` that binds Fly's `$PORT` with a 120 s
+  timeout (the legacy routes fetch upstream synchronously, well past gunicorn's
+  30 s default). No `manage.py runserver`, no `collectstatic`/WhiteNoise, and no
+  migrations at container start.
+* **Build context.** `.dockerignore` excludes `.env`, `*.sqlite3`, virtual
+  environments, bytecode, VCS/editor state, `docs/` and the deployment
+  descriptors. This is a security control rather than an optimisation: the
+  context root holds `odds/.env` and `odds/db.sqlite3`, and the root is what
+  `.gitignore` already protects from the repository side.
+* **Fly configuration.** `fly.toml`: a placeholder app name and region,
+  `[build] dockerfile`, a `[env]` block holding non-secrets only
+  (`ALLOWED_HOSTS`, `DEFAULT_FROM_EMAIL`, `SCRAPE_URL`, `PORT`, and the six
+  transport values), `[deploy] release_command = "python manage.py migrate
+  --noinput"` as the single release action, an `[http_service]` on port 8080 with
+  `force_https`, `auto_stop_machines = "off"` (a stopped machine would stall the
+  first scrape of the day) and one `GET /api/health/` check, and no `[[vm]]` block
+  at all — the machine size is a deploy-time choice, not a committed one.
+  `SECRET_KEY` and `DATABASE_URL` are Fly secrets and appear nowhere in the
+  repository; `DEBUG` and `CORS_ALLOW_ALL_ORIGINS` are deliberately absent, so the
+  safe defaults apply.
+* **Settings.** `DATABASES['default']` is still the git-ignored SQLite file by
+  default; a non-empty `DATABASE_URL` replaces it through `dj_database_url.parse`,
+  and the PostgreSQL path is configured for Fly's pooler: `CONN_MAX_AGE = 0`,
+  `DISABLE_SERVER_SIDE_CURSORS = True` and
+  `OPTIONS['prepare_threshold'] = None`, so no pooled connection is left holding
+  a cursor, a transaction or a prepared statement that the pooler could hand to
+  another client. Transport security is six explicit environment values
+  (`SECURE_SSL_REDIRECT`, `SESSION_COOKIE_SECURE`, `CSRF_COOKIE_SECURE`,
+  `SECURE_HSTS_SECONDS`, `SECURE_HSTS_INCLUDE_SUBDOMAINS`,
+  `SECURE_HSTS_PRELOAD`), each read on its own and none derived from `DEBUG`, so
+  the local defaults keep plain HTTP working; `SECURE_PROXY_SSL_HEADER` stays
+  unconditional because the container is only ever reached through Fly's TLS
+  proxy.
+* **Pins.** `gunicorn==26.2.0`, `psycopg[binary]==3.3.6` and
+  `dj-database-url==3.1.2`, appended to the flat pinned list.
+* **Configuration.** `odds/.env.example` documents `DATABASE_URL` (empty by
+  default, a secret the moment it holds a value) and the six transport values
+  (left unset, because a development machine wants the plain-HTTP defaults), with
+  the PostgreSQL pooling note beside them.
+* **Tests.** `odds/alltips_scraper/tests_deployment_v1.py` (15 tests) pins the
+  two ends that matter: `DATABASE_URL` precedence, the pooling-safe PostgreSQL
+  options and the six transport values — each observed by importing the shipped
+  settings module in a subprocess, so the assertions describe the file on disk
+  rather than a re-implementation of it; and the shipped `Dockerfile`,
+  `.dockerignore`, `fly.toml`, requirements and `.env.example`, read from disk
+  (`fly.toml` through `tomllib`). `fly.toml` and `.env.example` are also scanned
+  for forbidden tokens, so a stray credential fails the suite instead of shipping.
+* **Docs.** `docs/DEPLOYMENT.md` (new), plus `README.md`, `docs/RUNBOOK.md`
+  (§6, §7, §9, §10, §11) and this section. The corrective pass that followed the
+  first review aligned every count, setting name, test-file reference and Fly
+  placeholder in those four documents with the shipped files, so no document
+  describes a number, a `DEBUG`-derived rule or an app identity the code no longer
+  has.
+
+### 7.2 Verification performed
+
+| Command | Result |
+| --- | --- |
+| `manage.py check` | no issues |
+| `manage.py makemigrations --check --dry-run` | no changes detected (no model changes in this sprint) |
+| `manage.py test alltips_scraper` | 515 tests, OK |
+| `manage.py test alltips_scraper.tests_deployment_v1` | 15 tests, OK |
+| `DEBUG=False manage.py check --deploy` | 4 warnings with the transport values unset; no issues with them set |
+| `docker build` / `docker run` / image-safety checks | **not run** — no Docker CLI in the sprint environment |
+
+### 7.3 Deliberately out of scope (backlog)
+
+* The image has never been built, so the Dockerfile is unproven end to end;
+  a build-and-smoke-test CI job is the next step (`docs/DEPLOYMENT.md` §10).
+* No `/healthz`: `/api/health/` is the liveness route, and a second alias was
+  deliberately not added.
+* No WhiteNoise/`collectstatic`: the image serves no static files, so `/admin/`
+  would be unstyled in a deployment.
+* No scheduler, process group or automatic `refresh_tips`: snapshot refresh stays
+  out of band and manual, exactly as sprint 1D left it.
+* No shared cache: `LocMemCache` is per process, so two gunicorn workers hold two
+  caches with their own date-scoped keys.
+* No `CSRF_TRUSTED_ORIGINS`: the API is read-only public `GET`s, so no browser
+  POST surface needs it yet.
+* No filled-in Fly identity: `fly.toml` keeps placeholders for `app` and
+  `primary_region`, so the first deploy has to be preceded by `fly apps create`
+  and a one-line edit. That is deliberate — an app name belongs to the account
+  that owns it, not to this repository.

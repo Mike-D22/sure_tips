@@ -9,6 +9,17 @@ Backend repository for the **OddMate** sports-tips product (app label
 > for Sprint 0.5. See [`docs/PRODUCT_DECISIONS.md`](docs/PRODUCT_DECISIONS.md)
 > for the product direction that future sprints must follow.
 
+> **Deployment readiness (sprint 1E-A1):** the service is now containerised
+> (`Dockerfile`, `.dockerignore`, `fly.toml`) and runs on PostgreSQL through
+> `DATABASE_URL`, with SQLite left as the local default. Transport security is
+> environment-driven: a deployment states the six transport values in `fly.toml`
+> `[env]`, and unset local defaults keep plain HTTP working. `fly.toml` is a
+> template — `app`, `primary_region` and the `<app>.fly.dev` host are placeholders
+> until the app is created. **Nothing has been deployed:** the procedure, the
+> secrets, and the open gaps are in
+> [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md), and the sprint record is in
+> [`docs/AUDIT.md`](docs/AUDIT.md) section 7.
+
 ## Repository layout
 
 - `odds/` — Django backend service (the tips scraper API).
@@ -20,7 +31,12 @@ Backend repository for the **OddMate** sports-tips product (app label
     offline parser-contract tests, and their static HTML fixtures in
     `odds/alltips_scraper/fixtures/`.
   - `odds/customers/` — placeholder app for future account/entitlement work.
-- `docs/` — product decisions, data contract, audit trail, and runbook.
+- `docs/` — product decisions, data contract, audit trail, runbook, and the
+  deployment procedure.
+- `Dockerfile`, `.dockerignore`, `fly.toml` — container image and Fly.io
+  configuration for the service (sprint 1E-A1). `fly.toml` is a template: its app
+  name, region and host are placeholders that are filled in when the Fly app is
+  created. See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 - `.venv/` — (git-ignored) local virtual environment at the repository root.
 
 ## Documentation
@@ -32,6 +48,7 @@ Backend repository for the **OddMate** sports-tips product (app label
 | [`docs/AUDIT.md`](docs/AUDIT.md) | Sprint 0.5 audit of the `odds/` service. |
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | Setup, run, verify, and operate the service. |
 | [`docs/API_V1_CONTRACT.md`](docs/API_V1_CONTRACT.md) | Implemented contract of `GET /api/v1/tips/`: route, query parameters, date/timezone semantics, response envelope, error codes, and deferrals. |
+| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Container and Fly.io deployment: image contents, secrets versus `[env]`, release command, health check, rollback, and known gaps. |
 
 ## Quick start
 
@@ -46,6 +63,12 @@ environment:
 .\.venv\Scripts\python.exe .\odds\manage.py runserver 127.0.0.1:8000
 curl.exe http://127.0.0.1:8000/api/health/
 ```
+
+Deploying is a separate step: the image, its build context and the Fly
+configuration are described in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). The
+deployment configuration check uses the same interpreter — set `DEBUG=False` and
+the six transport values from `fly.toml` `[env]`, then run
+`manage.py check --deploy`, which reports no issues (`docs/RUNBOOK.md` §7).
 
 ## Brand and terminology
 
