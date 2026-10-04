@@ -633,3 +633,104 @@ installed there - which is a storage decision (a volume or a managed database), 
 a configuration flag. Until then, a type appears on a deployment only through a
 reviewed change to the content directory and a redeploy. Recorded as a gap in
 `docs/DEPLOYMENT.md` section 10.
+
+## 10. Review-time candidate-content validator (2026-10-04)
+
+Sprint 1F adds the review-time reading of a candidate content directory and shares
+the report-token rule between the writer and the reviewer. It is a review-tooling
+change: no request-path behaviour, envelope, query parameter, error code, seam,
+provider, content manifest, setting, dependency, migration, Docker/Fly
+configuration or endpoint/API contract changed.
+
+| Item | Value |
+| --- | --- |
+| Branch | `main`, with the published-content reader (section 9) and this review tooling uncommitted in the working tree |
+| Scope | the new `alltips_scraper/contentcheck_v1.py`, the new `alltips_scraper/management/commands/validate_v1_content.py`, the new `alltips_scraper/reporting_v1.py` (re-exported by `refresh_v1.py`), the new `tests_contentcheck_v1.py`, and the docs |
+| Deployment performed | **no** - nothing was built, installed, migrated, served or deployed |
+| External actions | none: no network call, no `docker`, no `fly`, no migration run, no `refresh_tips` against a source, no publish, no commit |
+| Suite | 654 tests, 1 skipped (`manage.py test alltips_scraper -v 2 --noinput`); the review-tooling module contributes 49 of them |
+| `manage.py check` | no issues |
+| `manage.py validate_v1_content --root odds/alltips_scraper/content/v1` | exit `0` - the tracked empty manifest is a valid candidate |
+| `manage.py makemigrations --check --dry-run` | no changes detected |
+| `git diff --check` | clean |
+
+### 10.1 What changed
+
+* **A second reading of the same artifacts.** `contentcheck_v1` checks a candidate
+  directory against the reader's own rules (`jsoncontent_v1`) and in the reader's
+  own vocabulary, and answers one question: can the current JSON reader safely load
+  this candidate artifact? It enumerates everything the candidate claims, refuses
+  the whole directory when anything it claims would not load, and reports one line
+  per artifact - the manifest line first, then one line per type key in sorted
+  order, so two runs over one candidate print the same report:
+
+  ```text
+  manifest status=ok entries=<n>
+  type=<token> status=ok
+  type=<token> status=refused reason=<token>
+  manifest status=refused reason=<token>
+  ```
+
+* **One candidate-only check.** Two of the states the reader answers `None` for are
+  silent, and a review has to catch them. A type key no manifest names stays "not
+  published yet"; a candidate root with no manifest at all is refused as
+  `manifest_missing`, the one reason token this module adds to the reader's
+  vocabulary, so the set a report can print is the reader's tokens plus that one.
+  The two states are deliberately different, because "nothing is published" is a
+  valid deployment and never a valid candidate to review.
+
+* **Not a second rule book.** Registry membership is deliberately not checked, and
+  neither is whether the payload describes tips or whether the instant is recent:
+  those are the serializer's and the reviewer's questions, and a validator that
+  guessed at them would refuse candidates the deployment would happily serve.
+* **The command that runs it prints the reading and carries the verdict.**
+  `manage.py validate_v1_content --root DIRECTORY` is this app's command, `--root`
+  is explicit with no default, and the report is printed in full before the exit
+  status is decided: `0` for a usable candidate (including a valid manifest that
+  names no entry at all), `1` when the manifest or one or more named artifacts were
+  refused, and `2` when the invocation itself cannot be served (`--root` missing or
+  not a directory), in which case no artifact is checked and no report line is
+  printed. It writes no file, creates no directory, reads no configuration, reaches
+  no network, touches no database and no cache, and never touches `content/v1/`
+  unless that is the directory it was handed.
+* **The token rule is stated once.** `safe_token` and its constants moved into the
+  new `reporting_v1`, which imports nothing at all; `refresh_v1` re-exports the four
+  names (the same function object - `refresh_v1.safe_token is
+  reporting_v1.safe_token`) and `contentcheck_v1` imports the function directly, so
+  the validator no longer reaches the writer at all. A key that came from outside
+  therefore cannot forge a second report line, a second field or an invented `=` in
+  either the writer's report or the reviewer's.
+* **Tests.** The new `tests_contentcheck_v1.py` pins the review contract end to end:
+  the checks and the reason vocabulary, the deterministic report, the sanitised key,
+  the command's report and all three exit statuses, a refused invocation leaving no
+  line and no change on disk, the offline guard, the shared token object, and that
+  `reporting_v1` imports nothing.
+
+### 10.2 What deliberately did not change
+
+* The request path, the reader, the seam and the provider: `views_v1.py`,
+  `urls_v1.py`, `serializers_v1.py`, `readmodel_v1.py`, `jsoncontent_v1.py`,
+  `storage_v1.py` and `apps.py` are untouched, so the route, the query parameters,
+  the envelope, the error codes and the install point are exactly as sections 8 and
+  9 recorded them.
+* The writer: `refresh_v1` still decides, stores and reports exactly as before.
+  Only `safe_token` and its three constants moved to `reporting_v1` and are
+  re-exported, so no name, token or output line changed.
+* The shipped content: `content/v1/manifest.json` is still the tracked empty
+  manifest (`{"schema_version": 1, "snapshots": {}}`), so this batch publishes no
+  tip type, and the validator's passing run over it proves the candidate is usable
+  rather than that any type is published.
+* The deployment: the validator is not invoked at build, release or runtime, and
+  nothing in a deployment writes, refreshes or republishes content. No cache,
+  Redis, Upstash, secret or publication automation was added, and no setting,
+  dependency, migration, content manifest or Docker/Fly file changed.
+
+### 10.3 Open gap this leaves
+
+Publication is still a reviewed change to the content directory followed by a
+redeploy. The validator tells a reviewer whether a candidate would load, but
+nothing generates a candidate, computes its canonical digest or pins its
+authoritative instant, and nothing schedules any of it: the review-time checks
+`tests_contentcheck_v1.py` pins are not a replacement for the reader's runtime
+answer. A controlled publication workflow remains future work, recorded beside the
+storage and publication gaps in `docs/DEPLOYMENT.md` section 10.

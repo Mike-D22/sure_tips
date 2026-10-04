@@ -68,6 +68,44 @@ line holding the type key and a reason token and nothing else.
    than read as UTC — see `docs/DATA_CONTRACT.md` §13.
 4. Update the tests that pin the published artifact in the same change.
 
+## Reviewing a candidate before publishing
+
+A candidate publication is checked before it is committed with the read-only,
+offline validator:
+
+```powershell
+.\.venv\Scripts\python.exe .\odds\manage.py validate_v1_content --root <candidate-directory>
+```
+
+* `--root` is explicit and has no default: the directory this package ships is a
+  deployment's content decision, never a fallback for a review.
+* The run is offline and read-only. It neither publishes, rewrites nor creates
+  content artifacts, and it touches no database, no cache, no network and no
+  configuration value.
+* Exit `0` means the candidate is valid, including a valid manifest that names no
+  entry at all. Exit `1` means the manifest, or one or more of the artifacts it
+  names, was refused. Exit `2` means the invocation itself could not be served:
+  `--root` was not given, or names something that is not a directory, and no
+  artifact is checked at all.
+* A candidate root with no manifest is refused as `manifest_missing`, the one
+  state a candidate may not be in and a deployment may.
+* Registry membership is deliberately **not** checked: the validator mirrors the
+  reader's own compatibility rules and nothing more, so it never refuses a
+  candidate the deployed reader would serve.
+* The report is deterministic - the manifest line first, then one line per type
+  key in sorted order - and every type key is sanitised before it is printed, so a
+  key read out of a candidate file cannot forge a second line or a second field:
+
+```text
+manifest status=ok entries=<n>
+type=<token> status=ok
+type=<token> status=refused reason=<token>
+manifest status=refused reason=<token>
+```
+
+A candidate that passes is still only a candidate: it becomes content here through
+the reviewed change described below.
+
 ## Committing rules
 
 Content here is safe to commit only if it contains:

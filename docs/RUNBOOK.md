@@ -91,7 +91,8 @@ content under `odds/alltips_scraper/content/v1/` that the image ships. The reque
 path only ever reads, so a server whose content names no usable record returns
 `503` by design instead of scraping. Its contract is `docs/API_V1_CONTRACT.md`;
 section 4.2 covers the out-of-band writer, which is refused unless the durable
-provider is installed.
+provider is installed, and section 4.3 covers the review-time validation of a
+candidate change to that content.
 
 ### 4.2 Populating the durable snapshot (`manage.py refresh_tips`)
 
@@ -159,6 +160,61 @@ type=<key> outcome=failed reason=<token>
   is resolved, so a run against a provider that cannot store is refused as one
   whatever the selection says, and it is how a scheduler or a cron job learns the
   outcome.
+
+### 4.3 Reviewing a candidate content change (`manage.py validate_v1_content`)
+
+`GET /api/v1/tips/` is served from the reviewed canonical content the image ships
+(section 4.1). Preparing a change to that content is a manual, reviewed change to
+`odds/alltips_scraper/content/v1/`, and the read-only, offline validator is what a
+reviewer runs before committing it:
+
+```powershell
+.\.venv\Scripts\python.exe .\odds\manage.py validate_v1_content --root <candidate-directory>
+```
+
+* `--root DIRECTORY` names the candidate content directory, and it is required:
+  there is no default, because the directory this package ships is a deployment's
+  content decision rather than a fallback for a review. A run without it is refused
+  rather than defaulted, so a mistyped invocation can never be mistaken for a
+  validation of artifacts an operator did not name.
+* The command is offline and read-only. It reads no configuration value, touches no
+  database and no cache, reaches no network and writes no file: it does not publish,
+  rewrite or create a content artifact, and it never touches `content/v1/` unless
+  that directory is the one it was handed.
+* It judges the candidate against the reader's own rules (`jsoncontent_v1`) and in
+  the reader's own vocabulary, plus the one candidate-only check below. Registry
+  membership is deliberately not checked: whether the versioned registry publishes
+  a type key, whether the payload describes tips and whether the instant is recent
+  are the serializer's and the reviewer's questions, so the validator never refuses
+  a candidate the deployment would serve.
+* A missing manifest in an explicit candidate root is refused as
+  `manifest_missing`. That state is deliberately not the reader's empty deployment:
+  "nothing is published" is a valid deployment and never a valid candidate to
+  review.
+* The report is deterministic - the manifest line first, then one line per type key
+  in sorted order - and every type key is sanitised by the same rule the writer
+  uses (`reporting_v1.safe_token`, re-exported by `refresh_v1`), so a key read out
+  of a candidate file cannot forge a second line or a second field:
+
+  ```text
+  manifest status=ok entries=<n>
+  type=<token> status=ok
+  type=<token> status=refused reason=<token>
+  manifest status=refused reason=<token>
+  ```
+
+* The exit status is `0` when the candidate is usable - which includes a valid
+  manifest that names no entry at all - `1` when the manifest or one or more of the
+  artifacts it names was refused, and `2` when the invocation itself cannot be
+  served: `--root` was not given (`root_not_given`) or does not name a directory
+  (`root_not_a_directory`), in which case no artifact is checked and no report line
+  is printed at all. That `2` is the invocation's own status; it means something
+  different from the writer's `2` in section 4.2, which reports an unusable
+  `--type` name.
+* A refusal names only fixed tokens: no line carries a path, a file name, a digest,
+  a payload value, an instant or an exception, and the report is printed in full
+  before the exit status is decided, so a reviewer sees the whole list of what has
+  to be fixed.
 
 ## 5. Caching semantics
 
@@ -230,7 +286,7 @@ Generate a secret key with:
 ```powershell
 .\.venv\Scripts\python.exe .\odds\manage.py check                              # expect: no issues
 .\.venv\Scripts\python.exe .\odds\manage.py makemigrations --check --dry-run   # expect: No changes detected
-.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 515 tests, all passing
+.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 654 tests, 1 skipped, all passing
 .\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper.tests_deployment_v1 --noinput  # the 15 deployment tests
 
 # The deployment configuration check. A deployed process never sets DEBUG, and it
@@ -263,8 +319,10 @@ The versioned surface is offline too: `tests_api_v1.py` reads through a provider
 double it installs itself, `tests_jsoncontent_v1.py` reads temporary content
 directories, `tests_publishedcontent_reader_v1.py` serves the endpoint from them,
 `tests_storage_v1.py` and `tests_startup_v1.py` exercise the real table in the test
-database, and `tests_refresh_v1.py` fakes the fetch layer and disables the socket
-layer as well.
+database, `tests_refresh_v1.py` fakes the fetch layer and disables the socket
+layer as well, and `tests_contentcheck_v1.py` runs the review-time validator
+(section 4.3) over temporary candidate directories with the socket layer disabled
+as well.
 
 Nothing touches `freesupertips.com` or any other host, and no test refreshes or
 regenerates a fixture. The contract these tests pin is documented in

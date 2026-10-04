@@ -44,7 +44,14 @@ Deliberately **not** part of this image or this sprint:
 * no scheduler, no Celery and no automatic `refresh_tips`: the versioned endpoint
   is served from published content, and the writer refuses to run (exit status `3`)
   against the read-only reader this image installs;
-* no change to the six legacy routes, the versioned route, or their envelopes.
+* no change to the six legacy routes, the versioned route, or their envelopes;
+* no publication automation and no content writer at runtime:
+  `manage.py validate_v1_content` is a developer/reviewer tool
+  (`docs/RUNBOOK.md` section 4.3) that neither the image nor the release invokes,
+  and nothing in a deployment writes, refreshes or republishes the shipped content;
+* no cache, Redis or Upstash: the versioned endpoint reads the shipped content
+  through the seam and needs no shared cache (the legacy `LocMemCache` is unchanged
+  and per process).
 
 ## 2. Prerequisites
 
@@ -226,6 +233,13 @@ manifest does not name.
   Redis backend stays backlog.
 * **No refresh scheduling.** `refresh_tips` remains out of band and manual: no
   `release_command`, process group or cron in this sprint starts it.
+* **No publication automation and no validator in the image.** The review-time
+  validator (`manage.py validate_v1_content`, `docs/RUNBOOK.md` section 4.3) is a
+  developer/reviewer tool: the release command, gunicorn and the health check never
+  invoke it, and neither it nor anything else writes, refreshes or republishes the
+  shipped content. No cache, Redis, Upstash or publication secret was added, and
+  preparing a candidate, computing its digest and committing it remain manual and
+  reviewed.
 * **Forward-only migrations.** The release command migrates; there is no
   rollback beyond a new forward migration.
 * **A template `fly.toml`.** `app` (committed as

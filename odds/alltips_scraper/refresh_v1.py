@@ -87,6 +87,12 @@ from datetime import datetime, timezone
 from types import MappingProxyType
 
 from .readmodel_v1 import load_snapshot, store_snapshot
+from .reporting_v1 import (
+    MAX_TYPE_KEY_LENGTH,
+    REPLACEMENT_CHARACTER,
+    SAFE_TOKEN_EXTRA_CHARACTERS,
+    safe_token,
+)
 from .serializers_v1 import (
     SUCCESS_ENVELOPE_KEYS,
     TIP_TYPE_UNITS,
@@ -258,36 +264,17 @@ MATCHES_COUNT_KEY = 'matches_count'
 TOTAL_TIPS_KEY = 'total_tips'
 TOTAL_ACCUMULATORS_KEY = 'total_accumulators'
 
-# A reported type key is one token: the storage column's own width bounds it, and
-# anything outside the safe set (a newline, a space, an ``=``) becomes ``?``, so a
-# key can never terminate a line or forge a field of its own.
-MAX_TYPE_KEY_LENGTH = 64
-SAFE_TOKEN_EXTRA_CHARACTERS = frozenset('._-')
-REPLACEMENT_CHARACTER = '?'
+# A reported type key is one token: the width that bounds it, the safe set it may
+# hold, and the character everything outside that set becomes are owned by
+# ``reporting_v1`` and imported above. They stay on this module's surface because
+# ``refresh_v1.safe_token`` and the names beside it are how a caller has always
+# named them, and because the reviewer in ``contentcheck_v1`` imports the very
+# same objects - so one token means one thing in every report that prints one.
 
 
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
-
-def safe_token(value):
-    """Return ``value`` as one printable token, fitted for a report line.
-
-    A type key normally comes from the versioned registry, but a command line
-    hands one in, so the key that reaches a report or a log line is sanitised
-    first: every character outside letters, digits and ``._-`` becomes ``?``, and
-    the result is truncated to the stored key's own width. A key therefore cannot
-    contain a newline that forges a second report line, a space that makes a
-    reader see two fields, or an ``=`` that invents one. A value with nothing safe
-    left in it becomes ``?``, so a line never loses the ``type=`` field itself.
-    """
-    text = value if isinstance(value, str) else str(value)
-    token = ''.join(
-        character if (character.isalnum() or character in SAFE_TOKEN_EXTRA_CHARACTERS)
-        else REPLACEMENT_CHARACTER
-        for character in text
-    )[:MAX_TYPE_KEY_LENGTH]
-    return token or REPLACEMENT_CHARACTER
 
 
 class RefreshOutcome:

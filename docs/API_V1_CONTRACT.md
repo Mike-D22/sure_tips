@@ -5,6 +5,9 @@ Snapshot storage revised: 2026-09-29 (durable row store and out-of-band writer; 
 request path is unchanged)
 Snapshot source revised: 2026-10-04 (the installed reader is the read-only
 published-content reader; the writer runs only against the durable store)
+Review tooling added: 2026-10-04 (a read-only candidate-content validator for the
+review that prepares a content change; the request path and the reader are
+unchanged)
 
 | Item | Value |
 | --- | --- |
@@ -172,6 +175,13 @@ Every error body has the same shape: `api_version` plus an `error` object whose
   before it resolves a type) unless `storage_v1.DatabaseSnapshotProvider` is the
   installed provider. That writer is deliberately outside this request-path contract
   and no route can reach it; it is documented in `docs/RUNBOOK.md` section 4.2.
+* A content change is prepared out of band and validated before it is committed:
+  `manage.py validate_v1_content --root <candidate-directory>` re-runs the reader's
+  own compatibility checks over a candidate directory, offline and read-only, and
+  reports one line per artifact (`docs/RUNBOOK.md` section 4.3). It never runs in
+  the request path, in a deployment or in the release, it publishes and rewrites
+  nothing, and it deliberately checks no registry membership: whether the versioned
+  registry publishes a type key stays this contract's question, not the validator's.
 * `filter.timezone` is echoed but never applied, so a `200` is not evidence that a
   timezone-aware day window was honoured.
 * Deferred, and deliberately not implemented in this sprint:
@@ -186,13 +196,19 @@ Every error body has the same shape: `api_version` plus an `error` object whose
 
 The contract is covered by offline tests in
 `odds/alltips_scraper/tests_api_v1.py`, with the published-content reader covered by
-`tests_jsoncontent_v1.py` and `tests_publishedcontent_reader_v1.py`, and the durable
+`tests_jsoncontent_v1.py` and `tests_publishedcontent_reader_v1.py`, the durable
 store, its startup install and the out-of-band writer by `tests_storage_v1.py`,
-`tests_startup_v1.py` and `tests_refresh_v1.py`.
+`tests_startup_v1.py` and `tests_refresh_v1.py`, and the review-time validator by
+`tests_contentcheck_v1.py`.
 
 ```powershell
 .\.venv\Scripts\python.exe .\odds\manage.py check
 .\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput
+
+# Review a candidate content change before committing it: offline and read-only,
+# exit 0 for a valid candidate, 1 for a refused manifest or artifact, and 2 for an
+# unusable --root invocation (docs/RUNBOOK.md section 4.3).
+.\.venv\Scripts\python.exe .\odds\manage.py validate_v1_content --root odds/alltips_scraper/content/v1
 ```
 
 Manual check, local development only. `127.0.0.1:8000` is the loopback address of
