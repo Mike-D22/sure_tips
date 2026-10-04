@@ -517,10 +517,13 @@ the legacy cache/health contract green.
 * The versioned `GET /api/v1/tips/` surface is additive to these rules: it is the
   versioned contract for the same six source keys and is documented in
   `docs/API_V1_CONTRACT.md`. Changing it updates that document and
-  `odds/alltips_scraper/tests_api_v1.py` in the same change. Its out-of-band writer,
-  `refresh_v1.py` run by `manage.py refresh_tips`, stores the source envelope as
-  fetched and changes nothing in this contract; it is documented in
-  `docs/RUNBOOK.md` section 4.2.
+  `odds/alltips_scraper/tests_api_v1.py` in the same change. A deployment is served
+  from reviewed canonical content (`jsoncontent_v1.py` reading
+  `odds/alltips_scraper/content/v1/`), so a deployed snapshot is a published
+  artifact rather than a fetch. Its out-of-band writer, `refresh_v1.py` run by
+  `manage.py refresh_tips`, stores the source envelope as fetched into the durable
+  table and changes nothing in this contract; it is refused unless the durable
+  provider is installed, and it is documented in `docs/RUNBOOK.md` section 4.2.
 
 ## 13. Timezone architecture (authoritative UTC storage, device-local display)
 

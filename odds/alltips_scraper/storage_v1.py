@@ -18,7 +18,9 @@ Ground rules
 * **The digest is the row's own claim about its payload.** Every write stores the
   digest of the payload exactly as it is stored, and every read recomputes that
   digest before the payload is handed on. A row whose payload no longer matches
-  its own digest is refused rather than published.
+  its own digest is refused rather than published. The rule itself — the canonical
+  byte form and SHA-256 over it — is stated in ``canonical_json_v1`` and re-exported
+  from here, so this module and every other caller of it cannot disagree about it.
 * **A stored row is either usable or absent.** A read validates the row's record
   version, digest, payload shape and timestamp, and answers ``None`` for a row
   that fails any of them — the same answer as "no row at all". ``None`` is
@@ -45,8 +47,6 @@ Ground rules
 See ``docs/DATA_CONTRACT.md`` §13 for the authoritative-UTC storage rule.
 """
 
-import hashlib
-import json
 import logging
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -54,6 +54,19 @@ from datetime import datetime, timezone
 from django.db import DatabaseError, transaction
 from django.utils import timezone as django_timezone
 
+# The canonical form and its one digest rule are owned by ``canonical_json_v1``,
+# which depends on the standard library only. They are imported here on purpose:
+# they are part of this module's public surface too, so
+# ``from alltips_scraper.storage_v1 import canonical_payload_sha256`` keeps
+# working and such a caller gets the same function object the storage layer
+# digests with.
+from .canonical_json_v1 import (
+    CANONICAL_JSON_SEPARATORS,
+    CANONICAL_TEXT_ENCODING,
+    DIGEST_ALGORITHM,
+    canonical_payload_bytes,
+    canonical_payload_sha256,
+)
 from .models import SnapshotV1
 from .readmodel_v1 import SNAPSHOT_SCHEMA_VERSION
 
@@ -68,16 +81,10 @@ LOGGER_NAME = 'alltips_scraper.storage_v1'
 
 logger = logging.getLogger(LOGGER_NAME)
 
-# The digest algorithm the stored ``payload_sha256`` column is written with.
-# ``hashlib.new()`` is handed this name, so the algorithm is stated once.
-DIGEST_ALGORITHM = 'sha256'
-
-# The canonical JSON form: keys sorted, no whitespace around a separator, and
-# every non-ASCII character escaped. Two payloads that differ only in the dict
-# insertion order they were built with therefore digest identically, and no
-# digest depends on the locale of the machine that computed it.
-CANONICAL_JSON_SEPARATORS = (',', ':')
-CANONICAL_TEXT_ENCODING = 'utf-8'
+# The digest algorithm, the canonical JSON form and the payload digest itself are
+# re-exported from ``canonical_json_v1`` (see the import at the top of this
+# module). This module states that rule nowhere, so there is exactly one copy of
+# it to change and one digest to compare against.
 
 # Why a stored row was refused. Each is a fixed token, never a value a row
 # supplied, so a log line can name the failed check without quoting the row.
@@ -98,33 +105,10 @@ FAILED_READ_MESSAGE = 'stored v1 snapshot read failed (type_key=%s, reason=%s)'
 # The canonical payload form and its one digest
 # ---------------------------------------------------------------------------
 
-
-def canonical_payload_bytes(payload):
-    """Return the canonical byte form of ``payload``.
-
-    The form is JSON with sorted keys, compact separators and every non-ASCII
-    character escaped, encoded as UTF-8. It is the only form a digest is taken
-    over, so a payload digests identically whatever order its keys were inserted
-    in and wherever it is digested.
-    """
-    text = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=CANONICAL_JSON_SEPARATORS,
-        ensure_ascii=True,
-    )
-    return text.encode(CANONICAL_TEXT_ENCODING)
-
-
-def canonical_payload_sha256(payload):
-    """Return the lowercase hex SHA-256 digest of the canonical byte form.
-
-    A payload JSON cannot represent raises rather than being digested
-    approximately: an approximate digest would let a rewritten payload keep the
-    claim its row makes about it.
-    """
-    return hashlib.new(
-        DIGEST_ALGORITHM, canonical_payload_bytes(payload)).hexdigest()
+# Both names used to be defined here and now live in ``canonical_json_v1``, which
+# this module re-exports them from. There is nothing left to state in this
+# section, and deliberately so: a second copy of the digest rule is exactly the
+# defect that extracting the helper removes.
 
 
 # ---------------------------------------------------------------------------

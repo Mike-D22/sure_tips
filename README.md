@@ -10,8 +10,9 @@ Backend repository for the **OddMate** sports-tips product (app label
 > for the product direction that future sprints must follow.
 
 > **Deployment readiness (sprint 1E-A1):** the service is now containerised
-> (`Dockerfile`, `.dockerignore`, `fly.toml`) and runs on PostgreSQL through
-> `DATABASE_URL`, with SQLite left as the local default. Transport security is
+> (`Dockerfile`, `.dockerignore`, `fly.toml`) and runs on its local, git-ignored
+> SQLite file in every environment — there is no `DATABASE_URL` and no PostgreSQL
+> dependency. Transport security is
 > environment-driven: a deployment states the six transport values in `fly.toml`
 > `[env]`, and unset local defaults keep plain HTTP working. `fly.toml` is a
 > template — `app`, `primary_region` and the `<app>.fly.dev` host are placeholders
@@ -20,15 +21,28 @@ Backend repository for the **OddMate** sports-tips product (app label
 > [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md), and the sprint record is in
 > [`docs/AUDIT.md`](docs/AUDIT.md) section 7.
 
+> **Published content (batch B, 2026-10-04):** the versioned endpoint is served from
+> reviewed canonical JSON that ships inside the image
+> (`odds/alltips_scraper/content/v1/`), so the deployed reader is read-only. The
+> out-of-band writer `manage.py refresh_tips` writes the durable snapshot table
+> instead and refuses to run (exit status `3`) unless
+> `storage_v1.DatabaseSnapshotProvider` is the installed provider. See
+> [`docs/API_V1_CONTRACT.md`](docs/API_V1_CONTRACT.md) and
+> [`docs/RUNBOOK.md`](docs/RUNBOOK.md) section 4.2.
+
 ## Repository layout
 
 - `odds/` — Django backend service (the tips scraper API).
   - `odds/odds/` — project settings and URL routing.
   - `odds/alltips_scraper/` — legacy tips scraping endpoints, plus the versioned
     `urls_v1.py`, `views_v1.py`, `readmodel_v1.py`, `serializers_v1.py`,
-    `storage_v1.py` and `refresh_v1.py` modules behind `GET /api/v1/tips/` (with
-    `management/commands/refresh_tips.py` as the only writer of a snapshot), the
-    offline parser-contract tests, and their static HTML fixtures in
+    `storage_v1.py` and `refresh_v1.py` modules behind `GET /api/v1/tips/`. The
+    endpoint is served from the read-only published content the image ships
+    (`jsoncontent_v1.py` reading `odds/alltips_scraper/content/v1/`, installed by
+    `apps.py`); `management/commands/refresh_tips.py` is the only writer of the
+    durable snapshot table and runs only while
+    `storage_v1.DatabaseSnapshotProvider` is the installed provider. The package
+    also holds the offline parser-contract tests and their static HTML fixtures in
     `odds/alltips_scraper/fixtures/`.
   - `odds/customers/` — placeholder app for future account/entitlement work.
 - `docs/` — product decisions, data contract, audit trail, runbook, and the

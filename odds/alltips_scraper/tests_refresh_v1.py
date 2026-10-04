@@ -39,6 +39,7 @@ from django.db import DatabaseError
 from django.test import SimpleTestCase, TestCase
 
 from . import refresh_v1, storage_v1, utils
+from .jsoncontent_v1 import JsonSnapshotProvider
 from .management.commands import refresh_tips
 from .models import SnapshotV1
 from .readmodel_v1 import (
@@ -1661,7 +1662,19 @@ class RefreshDryRunTests(RefreshPipelineTestCase):
 
 
 class RefreshCommandTests(RefreshPipelineTestCase):
-    """``manage.py refresh_tips``: what it prints, and what its exit status means."""
+    """``manage.py refresh_tips``: what it prints, and what its exit status means.
+
+    The durable provider is installed for every test in this class, because that
+    is the one provider a run is allowed to end in: the command refuses to run
+    against anything else, and which providers are refused is
+    ``RefreshProviderGuardTests``' subject.
+    """
+
+    def setUp(self):
+        super().setUp()
+        installed = get_snapshot_provider()
+        self.addCleanup(set_snapshot_provider, installed)
+        set_snapshot_provider(DatabaseSnapshotProvider())
 
     def test_the_command_is_registered_and_offers_its_two_switches(self):
         self.assertEqual(get_commands()['refresh_tips'], 'alltips_scraper')
@@ -1832,6 +1845,137 @@ class RefreshCommandTests(RefreshPipelineTestCase):
                     self.assertFalse(fetch.called)
                     self.assertFalse(state.called)
                     self.assertFalse(store.called)
+
+
+# ---------------------------------------------------------------------------
+# The precondition: the provider a run is allowed to end in
+# ---------------------------------------------------------------------------
+
+
+class NotDurableProvider:
+    """A provider that speaks the seam's protocol and stores nothing durable.
+
+    Three callable methods are the whole seam protocol, so the seam accepts this
+    object; it is not the durable storage class, which is exactly the state a
+    refresh has to refuse.
+    """
+
+    def load(self, type_key):
+        return None
+
+    def store(self, type_key, payload, *, fetched_at=None):
+        return None
+
+    def clear(self):
+        return None
+
+
+class RefreshProviderGuardTests(RefreshPipelineTestCase):
+    """A refresh runs only against the durable provider; everything else refuses.
+
+    The refusal is the run's whole output: no report line, no fetch, no state
+    read, no write and no log, because the run never gets past its precondition.
+    ``RefreshCommandTests`` is the other half of the rule, and proves the run
+    itself still works once the durable provider is the one installed.
+    """
+
+    def install(self, provider):
+        """Install ``provider`` for this test and restore the previous one after."""
+        installed = get_snapshot_provider()
+        self.addCleanup(set_snapshot_provider, installed)
+        set_snapshot_provider(provider)
+
+    def assert_run_refused(self, *argv):
+        """Run the command and assert the one refusal a run that cannot store reports."""
+        out = StringIO()
+
+        with self.assertRaises(CommandError) as caught:
+            call_command('refresh_tips', *argv, stdout=out)
+
+        self.assertEqual(
+            str(caught.exception), refresh_tips.UNWRITABLE_PROVIDER_MESSAGE)
+        self.assertEqual(
+            caught.exception.returncode,
+            refresh_tips.UNWRITABLE_PROVIDER_RETURNCODE)
+        self.assertEqual(caught.exception.returncode, 3)
+        self.assertEqual(out.getvalue(), '')
+
+    def test_the_deployed_reader_refuses_the_run(self):
+        self.install(JsonSnapshotProvider())
+        self.serve(*refresh_v1.REFRESH_TYPE_ORDER)
+
+        with mock.patch.object(refresh_v1.logger, 'error') as logged:
+            self.assert_run_refused()
+
+        self.assertFalse(logged.called)
+        self.assertFalse(self.fetch.called)
+        self.assert_wrote_nothing()
+
+    def test_the_seams_own_in_memory_default_refuses_the_run(self):
+        self.install(None)
+        self.serve(self.tip_type)
+
+        self.assert_run_refused('--type', self.tip_type)
+
+        self.assertFalse(self.fetch.called)
+        self.assert_wrote_nothing()
+
+    def test_a_three_method_provider_that_is_not_the_durable_store_is_refused(self):
+        self.install(NotDurableProvider())
+        self.serve(self.tip_type)
+
+        self.assert_run_refused('--type', self.tip_type)
+
+        self.assertFalse(self.fetch.called)
+        self.assert_wrote_nothing()
+
+    def test_the_refusal_wins_over_an_unusable_type(self):
+        self.install(JsonSnapshotProvider())
+        self.serve(self.tip_type)
+
+        self.assert_run_refused('--type', 'not_a_type')
+
+        self.assertFalse(self.fetch.called)
+        self.assert_wrote_nothing()
+
+    def test_the_refusal_wins_over_a_dry_run(self):
+        self.install(JsonSnapshotProvider())
+        self.serve(self.tip_type)
+
+        self.assert_run_refused('--dry-run')
+
+        self.assertFalse(self.fetch.called)
+        self.assertFalse(self.state.called)
+        self.assertFalse(self.store.called)
+
+    def test_the_cli_reports_the_refusal_on_stderr_and_exits_three(self):
+        self.install(JsonSnapshotProvider())
+        stderr = StringIO()
+
+        # ``--skip-checks`` keeps this a test of the refusal itself: what an
+        # operator sees fail is the command's own precondition, not a check.
+        with mock.patch('sys.stderr', stderr), \
+                self.assertRaises(SystemExit) as caught:
+            refresh_tips.Command().run_from_argv(
+                ['manage.py', 'refresh_tips', '--skip-checks'])
+
+        self.assertEqual(caught.exception.code, 3)
+        self.assertEqual(
+            stderr.getvalue(),
+            'CommandError: %s\n' % refresh_tips.UNWRITABLE_PROVIDER_MESSAGE,
+        )
+
+    def test_the_cli_reraises_the_refusal_when_a_traceback_was_asked_for(self):
+        self.install(JsonSnapshotProvider())
+
+        with mock.patch('sys.stderr', StringIO()):
+            with self.assertRaises(CommandError) as caught:
+                refresh_tips.Command().run_from_argv(
+                    ['manage.py', 'refresh_tips', '--traceback', '--skip-checks'])
+
+        self.assertEqual(
+            str(caught.exception), refresh_tips.UNWRITABLE_PROVIDER_MESSAGE)
+        self.assertEqual(caught.exception.returncode, 3)
 
 
 # ---------------------------------------------------------------------------

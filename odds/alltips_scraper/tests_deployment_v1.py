@@ -2,23 +2,23 @@
 
 Why this module exists
 ----------------------
-Sprint 1E-A1 makes the service deployable - ``Dockerfile``, ``.dockerignore``,
-``fly.toml`` and ``DATABASE_URL`` support - without deploying it. All of that is
-configuration: no request path imports it, so nothing else in the suite would
-notice if a later edit reversed one of those decisions. An image that went back
-to ``manage.py runserver``, a secret copied into ``fly.toml``, a
-``release_command`` that started refreshing snapshots, a PostgreSQL connection
-setting that is unsafe behind a pooler, or a settings change that stopped
-honouring ``DATABASE_URL`` would each surface for the first time at deploy time,
-against a live service and a real database.
+Sprint 1E-A1 makes the service deployable - ``Dockerfile``, ``.dockerignore`` and
+``fly.toml`` - without deploying it. All of that is configuration: no request
+path imports it, so nothing else in the suite would notice if a later edit
+reversed one of those decisions. An image that went back to
+``manage.py runserver``, a secret copied into ``fly.toml``, a ``release_command``
+that started refreshing snapshots, or a settings change that let an environment
+variable select the database would each surface for the first time at deploy
+time, against a live service and a real database.
 
 So this module pins the deployment contract from two ends:
 
-1. **Behaviour.** ``DATABASE_URL`` really does select PostgreSQL and really does
-   leave the SQLite default alone when it is absent, and each transport setting
-   really is read from its own environment value. Both are observed by importing
-   the shipped settings module in a fresh interpreter with a fixed environment,
-   never by matching the text of the file that declares them.
+1. **Behaviour.** The database is the shipped SQLite file and no environment
+   value can select another one - a PostgreSQL-shaped ``DATABASE_URL`` is set and
+   the shipped file still wins - and each transport setting really is read from
+   its own environment value. Both are observed by importing the shipped
+   settings module in a fresh interpreter with a fixed environment, never by
+   matching the text of the file that declares them.
 2. **The shipped configuration.** ``Dockerfile``, ``.dockerignore``,
    ``fly.toml`` and ``odds/.env.example`` are read from disk - ``fly.toml``
    through ``tomllib`` - so the assertions describe the configuration the
@@ -38,6 +38,10 @@ Ground rules
 * **``/api/health/`` is the liveness contract.** Sprint 1E-A1 adds no
   ``/healthz``: ``fly.toml`` checks the legacy endpoint, and that route is pinned
   here instead.
+* **The published content ships in the image.** The versioned endpoint is served
+  from reviewed JSON inside the application package, so the content directory is
+  part of the image contract: it may not be excluded from the build context, and
+  the instruction that copies the service has to carry it in.
 
 See ``docs/DEPLOYMENT.md`` for the procedure these tests guard, and
 ``docs/RUNBOOK.md`` section 7 for the commands that run them.
@@ -55,6 +59,8 @@ from django.conf import settings
 from django.test import SimpleTestCase
 from django.urls import Resolver404, resolve
 
+from .jsoncontent_v1 import CANONICAL_CONTENT_ROOT
+
 APP_DIR = Path(__file__).resolve().parent
 ODDS_DIR = APP_DIR.parent
 REPO_ROOT = ODDS_DIR.parent
@@ -63,6 +69,14 @@ DOCKERFILE = REPO_ROOT / 'Dockerfile'
 DOCKERIGNORE = REPO_ROOT / '.dockerignore'
 FLY_CONFIG = REPO_ROOT / 'fly.toml'
 ENV_EXAMPLE = ODDS_DIR / '.env.example'
+
+# The canonical content the versioned endpoint is served from, and the one
+# instruction that copies the service directory holding it into the image. The
+# two are asserted against each other: the content lives under the directory the
+# copy names, so the copy is what carries it.
+CONTENT_ROOT = APP_DIR / 'content' / 'v1'
+SHIPPED_MANIFEST = CONTENT_ROOT / 'manifest.json'
+CONTENT_COPY_INSTRUCTION = 'COPY --chown=appuser:appuser odds/ ./odds/'
 
 # The liveness route shared by the container, fly.toml's health check and the
 # runbook; the port the image publishes; the WSGI callable its CMD names.
@@ -131,6 +145,9 @@ FORBIDDEN_DOCKERIGNORE_PATTERNS = ('*', 'odds', 'odds/', '/odds')
 PROBE_SECRET_KEY = 'django-insecure-deployment-tests-0123456789abcdefghijkl'
 PROBE_EMAIL = 'deployment-tests@example.invalid'
 PROBE_SCRAPE_URL = 'https://deployment-tests.invalid'
+# A negative probe: credential-shaped like a real managed-PostgreSQL URL, so a
+# test can set it and show that the shipped database mapping ignores it entirely.
+# Nothing parses it, and ``db.invalid`` resolves nowhere.
 PROBE_DATABASE_URL = (
     'postgres://probe_user:not-a-real-password@db.invalid:5432/oddmate_probe'
 )
@@ -217,7 +234,7 @@ def load_shipped_settings(**environment_overrides):
     they load, so module-level behaviour has to be observed where it is computed:
     a fresh interpreter running the shipped module. Every name the probe depends
     on is pinned here, because an environment variable wins over ``odds/.env`` in
-    python-decouple and an empty ``DATABASE_URL`` counts as set.
+    python-decouple and an empty value counts as one that is set.
 
     ``environment_overrides`` maps an environment name to a value; ``None``
     removes the name instead. Removing one (``ALLOWED_HOSTS``, the transport
@@ -252,7 +269,7 @@ def load_shipped_settings(**environment_overrides):
 
 
 class DatabaseConfigurationTests(SimpleTestCase):
-    """DATABASE_URL decides the database; SQLite is only the local default."""
+    """The database is the shipped SQLite file; nothing selects another one."""
 
     def test_sqlite_default_is_used_and_carries_no_postgres_option(self):
         probe = load_shipped_settings(DATABASE_URL='')
@@ -275,46 +292,42 @@ class DatabaseConfigurationTests(SimpleTestCase):
             with self.subTest(option=option):
                 self.assertEqual(database[option], 'unset')
 
-    def test_database_url_selects_postgres_with_its_own_credentials(self):
-        database = load_shipped_settings(DATABASE_URL=PROBE_DATABASE_URL)['database']
+    def test_database_url_selects_nothing_and_no_credential_reaches_the_mapping(self):
+        # The probe URL is credential-shaped on purpose: a regression that went
+        # back to parsing DATABASE_URL would have to put its host, user and port
+        # into the mapping these assertions read.
+        probe = load_shipped_settings(DATABASE_URL=PROBE_DATABASE_URL)
+        database = probe['database']
         self.assertEqual(
             database['engine'],
-            'django.db.backends.postgresql',
-            'a deployed service sets DATABASE_URL and must not fall back to SQLite',
+            'django.db.backends.sqlite3',
+            'the database must not follow DATABASE_URL',
         )
-        for field, expected in (
-            ('name', 'oddmate_probe'),
-            ('user', 'probe_user'),
-            ('host', 'db.invalid'),
-            ('port', '5432'),
-        ):
+        self.assertTrue(
+            database['name'].replace('\\', '/').endswith('odds/db.sqlite3'),
+            f'unexpected database path: {database["name"]}',
+        )
+        for field in ('user', 'host', 'port'):
             with self.subTest(field=field):
-                # str() because dj-database-url hands the port back as a number
-                # in some versions and as a string in others.
-                self.assertEqual(str(database[field]), expected)
+                self.assertIsNone(
+                    database[field],
+                    'no credential from DATABASE_URL may reach the mapping',
+                )
+        # Engine and file name are still the only keys configured even with a
+        # PostgreSQL-shaped URL set, so nothing parsed it into a new key.
+        self.assertEqual(probe['database_keys'], ['ENGINE', 'NAME'])
 
-    def test_postgres_connection_options_are_pooling_safe(self):
+    def test_postgres_pooling_options_are_gone(self):
+        # CONN_MAX_AGE, DISABLE_SERVER_SIDE_CURSORS and prepare_threshold existed
+        # only to make a pooled PostgreSQL deployment safe. With that deployment
+        # removed they must not be configured for any input - including a
+        # PostgreSQL-shaped one, which is what this probe sets.
         database = load_shipped_settings(DATABASE_URL=PROBE_DATABASE_URL)['database']
-        self.assertEqual(
-            database['conn_max_age'],
-            0,
-            'a pooled deployment must not reuse connections it does not own',
-        )
-        self.assertIs(
-            database['disable_server_side_cursors'],
-            True,
-            'a pooled deployment must not hold server-side cursors',
-        )
-        self.assertIn('prepare_threshold', database['options'])
-        self.assertIsNone(
-            database['prepare_threshold'],
-            'automatic prepared statements are unsafe under transaction pooling',
-        )
-        self.assertIsNot(
-            database['conn_health_checks'],
-            True,
-            'CONN_MAX_AGE=0 needs no health check: no connection outlives it',
-        )
+        self.assertEqual(database['options'], [])
+        for option in ('conn_max_age', 'conn_health_checks',
+                       'disable_server_side_cursors', 'prepare_threshold'):
+            with self.subTest(option=option):
+                self.assertEqual(database[option], 'unset')
 
 
 class SecuritySettingsTests(SimpleTestCase):
@@ -356,7 +369,7 @@ class SecuritySettingsTests(SimpleTestCase):
         expected = ('HTTP_X_FORWARDED_PROTO', 'https')
         self.assertEqual(settings.SECURE_PROXY_SSL_HEADER, expected)
         self.assertEqual(
-            load_shipped_settings(DATABASE_URL='')['proxy_header'],
+            load_shipped_settings()['proxy_header'],
             list(expected),
         )
 
@@ -415,6 +428,57 @@ class ImageContractTests(SimpleTestCase):
         for token in IMAGE_FORBIDDEN_TOKENS:
             with self.subTest(token=token):
                 self.assertNotIn(token, self.body)
+
+
+class ShippedContentTests(SimpleTestCase):
+    """The image carries the published content the deployed endpoint reads.
+
+    ``/api/v1/tips/`` is answered from reviewed JSON inside the application
+    package, so the content directory has to survive both halves of the build: it
+    may not be excluded from the build context, and the instruction that copies
+    the service has to carry it into the image. Nothing here builds an image - the
+    Dockerfile and ``.dockerignore`` are read as the configuration Docker would
+    receive.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.instructions = dockerfile_instructions(
+            DOCKERFILE.read_text(encoding='utf-8')
+        )
+
+    def test_the_content_root_is_the_directory_the_reader_defaults_to(self):
+        # The reader's default root is the package directory, and this test's
+        # path is built from the same place, so the two cannot drift apart.
+        self.assertEqual(CONTENT_ROOT, CANONICAL_CONTENT_ROOT)
+        self.assertTrue(CONTENT_ROOT.is_dir())
+
+    def test_the_manifest_the_image_ships_is_the_pinned_empty_one(self):
+        self.assertEqual(
+            json.loads(SHIPPED_MANIFEST.read_text(encoding='utf-8')),
+            {'schema_version': 1, 'snapshots': {}},
+        )
+
+    def test_the_image_copies_the_service_directory_that_holds_the_content(self):
+        self.assertTrue(
+            CONTENT_ROOT.is_relative_to(REPO_ROOT / 'odds'),
+            'the content directory has to live under the copied directory',
+        )
+        self.assertIn(CONTENT_COPY_INSTRUCTION, self.instructions)
+
+    def test_the_build_context_excludes_no_part_of_the_content_directory(self):
+        lines = [
+            line.strip()
+            for line in DOCKERIGNORE.read_text(encoding='utf-8').splitlines()
+            if line.strip() and not line.strip().startswith('#')
+        ]
+
+        for pattern in lines:
+            with self.subTest(pattern=pattern):
+                self.assertNotIn('content', pattern)
+                self.assertNotIn('alltips_scraper', pattern)
+                self.assertNotIn('.json', pattern)
 
 
 class BuildContextTests(SimpleTestCase):
@@ -503,7 +567,6 @@ class EnvExampleTests(SimpleTestCase):
 
     PLACEHOLDERS = {
         'SECRET_KEY': 'replace-with-a-generated-secret-key',
-        'DATABASE_URL': '',
         'DEBUG': 'False',
         'CORS_ALLOW_ALL_ORIGINS': 'False',
         'EMAIL_HOST_USER': '',
@@ -524,9 +587,8 @@ class EnvExampleTests(SimpleTestCase):
         for name in SECURITY_SETTINGS:
             with self.subTest(key=name):
                 self.assertEqual(self.values[name], str(SAFE_LOCAL_SECURITY[name]))
-        # A tracked database URL is a shape to copy, never a credential.
-        examples = [line for line in self.text.splitlines() if 'postgres://' in line]
-        self.assertTrue(examples, 'the example must show the DATABASE_URL shape')
-        for line in examples:
-            with self.subTest(line=line):
-                self.assertIn('PASSWORD', line)
+        # No database URL of any shape: the shipped settings read no
+        # DATABASE_URL, so the example must not advertise one. The name may still
+        # appear in the Database comment, but never as a KEY=value pair.
+        self.assertNotIn('DATABASE_URL', self.values)
+        self.assertNotIn('postgres://', self.text)

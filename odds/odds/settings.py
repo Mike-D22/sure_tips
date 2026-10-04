@@ -1,7 +1,6 @@
 
 from pathlib import Path
 
-import dj_database_url
 from decouple import Csv, config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -106,12 +105,19 @@ DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL')
 # Database --------------------------------------------------------------------
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 #
-# Local development and the test suite use the git-ignored SQLite file in this
-# directory, so a fresh checkout runs with no database server. A deployed
-# service sets DATABASE_URL instead (Fly Postgres attaches one automatically)
-# and that URL always wins: dj-database-url turns it into the mapping Django
-# expects. DATABASE_URL carries the database password, so it is a secret - it is
-# never written into this file, odds/.env.example or fly.toml.
+# SQLite, and only SQLite. Local development, the test suite and the container
+# all use the git-ignored SQLite file in this directory, so a fresh checkout runs
+# with no database server and the same image runs anywhere.
+#
+# There is no DATABASE_URL path and no PostgreSQL support: DATABASE_URL is not
+# read at all, so setting it - empty, absent or hostile - changes nothing here
+# and cannot reach the database mapping. The connection options the old pooled
+# PostgreSQL path needed (CONN_MAX_AGE, DISABLE_SERVER_SIDE_CURSORS,
+# OPTIONS['prepare_threshold']) are gone with it.
+#
+# Django's own installed apps (admin, auth, sessions, contenttypes) and the
+# versioned snapshot table still use this local file, which is why fly.toml's
+# release_command still runs `manage.py migrate`.
 
 DATABASES = {
     'default': {
@@ -119,30 +125,6 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
-
-DATABASE_URL = config('DATABASE_URL', default='')
-if DATABASE_URL:
-    DATABASES['default'] = dj_database_url.parse(DATABASE_URL)
-    if DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
-        # Pooling-safe connection handling, PostgreSQL only. A deployment reaches
-        # the database through a pooler, so this process must not hold connection
-        # state that the pooler then reassigns:
-        #   CONN_MAX_AGE = 0        every request gets its own connection
-        #                           instead of reusing one the pooler may hand
-        #                           to someone else;
-        #   DISABLE_SERVER_SIDE_CURSORS = True
-        #                           no named cursors that outlive the statement
-        #                           that opened them;
-        #   OPTIONS['prepare_threshold'] = None
-        #                           no automatic prepared statements, which are
-        #                           unsafe under transaction pooling.
-        # None of this is applied to the SQLite default above: it has no server,
-        # no pooler and none of those options.
-        DATABASES['default']['CONN_MAX_AGE'] = 0
-        DATABASES['default']['DISABLE_SERVER_SIDE_CURSORS'] = True
-        options = dict(DATABASES['default'].get('OPTIONS') or {})
-        options['prepare_threshold'] = None
-        DATABASES['default']['OPTIONS'] = options
 
 
 # Password validation

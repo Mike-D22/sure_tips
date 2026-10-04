@@ -375,6 +375,12 @@ odds/.gitignore:11:.venv/           odds/.venv         <- ignored
 
 ## 7. Sprint 1E-A1 — deployment readiness (2026-10-02)
 
+> **Superseded in part — see §8 (2026-10-03).** The `DATABASE_URL` /
+> Fly Managed PostgreSQL part of this sprint was removed afterwards. Everything
+> below stays as the historical record of sprint 1E-A1: read its database, pin
+> and `.env.example` claims as the state *at that date*, not as the current
+> architecture.
+
 Sprint 1E-A1 makes the service *deployable*: it adds the container and the Fly
 configuration, PostgreSQL through `DATABASE_URL`, and the pins the image needs.
 **Nothing was deployed** — no `fly` command ran against a real app, no image was
@@ -384,7 +390,7 @@ CLI). This section is the sprint record; `docs/DEPLOYMENT.md` is the procedure.
 | Item | Value |
 | --- | --- |
 | Branch | `main` at `40d5b24` (the sprint 1D merge) |
-| Scope | container, build context, Fly configuration, `DATABASE_URL`, pins, tests, docs |
+| Scope | container, build context, Fly configuration, `DATABASE_URL`, pins, tests, docs — the `DATABASE_URL` part was removed later, see §8 |
 | Deployment performed | **no** — configuration only |
 | Suite | 500 → 515 tests, all passing |
 | `check --deploy` | 4 warnings → no issues (with `DEBUG=False` and the six transport values) |
@@ -413,8 +419,9 @@ CLI). This section is the sprint record; `docs/DEPLOYMENT.md` is the procedure.
   at all — the machine size is a deploy-time choice, not a committed one.
   `SECRET_KEY` and `DATABASE_URL` are Fly secrets and appear nowhere in the
   repository; `DEBUG` and `CORS_ALLOW_ALL_ORIGINS` are deliberately absent, so the
-  safe defaults apply.
-* **Settings.** `DATABASES['default']` is still the git-ignored SQLite file by
+  safe defaults apply. (`DATABASE_URL` is no longer a secret or a setting at all —
+  §8.)
+* **Settings.** *(Superseded — §8.)* `DATABASES['default']` is still the git-ignored SQLite file by
   default; a non-empty `DATABASE_URL` replaces it through `dj_database_url.parse`,
   and the PostgreSQL path is configured for Fly's pooler: `CONN_MAX_AGE = 0`,
   `DISABLE_SERVER_SIDE_CURSORS = True` and
@@ -427,13 +434,13 @@ CLI). This section is the sprint record; `docs/DEPLOYMENT.md` is the procedure.
   the local defaults keep plain HTTP working; `SECURE_PROXY_SSL_HEADER` stays
   unconditional because the container is only ever reached through Fly's TLS
   proxy.
-* **Pins.** `gunicorn==26.2.0`, `psycopg[binary]==3.3.6` and
+* **Pins.** *(Superseded in part — §8.)* `gunicorn==26.2.0`, `psycopg[binary]==3.3.6` and
   `dj-database-url==3.1.2`, appended to the flat pinned list.
-* **Configuration.** `odds/.env.example` documents `DATABASE_URL` (empty by
+* **Configuration.** *(Superseded in part — §8.)* `odds/.env.example` documents `DATABASE_URL` (empty by
   default, a secret the moment it holds a value) and the six transport values
   (left unset, because a development machine wants the plain-HTTP defaults), with
   the PostgreSQL pooling note beside them.
-* **Tests.** `odds/alltips_scraper/tests_deployment_v1.py` (15 tests) pins the
+* **Tests.** *(Superseded in part — §8.)* `odds/alltips_scraper/tests_deployment_v1.py` (15 tests) pins the
   two ends that matter: `DATABASE_URL` precedence, the pooling-safe PostgreSQL
   options and the six transport values — each observed by importing the shipped
   settings module in a subprocess, so the assertions describe the file on disk
@@ -477,3 +484,152 @@ CLI). This section is the sprint record; `docs/DEPLOYMENT.md` is the procedure.
   `primary_region`, so the first deploy has to be preceded by `fly apps create`
   and a one-line edit. That is deliberate — an app name belongs to the account
   that owns it, not to this repository.
+
+
+## 8. Database scope correction — SQLite only (2026-10-03)
+
+Sprint 1E-A1 planned PostgreSQL through a Fly-managed cluster and a
+`DATABASE_URL` secret. That design was removed here, completing a removal that
+was already sitting unstaged in the working tree at `7fb71bd` — in
+`odds/odds/settings.py`, the `dj_database_url` import and the whole
+`if DATABASE_URL:` branch, including `CONN_MAX_AGE = 0`,
+`DISABLE_SERVER_SIDE_CURSORS = True` and `OPTIONS['prepare_threshold'] = None`.
+The partial edit was **kept and completed coherently**, not restored: the intent
+of the change had already been decided, and reverting it only to re-apply the
+same removal would have discarded reviewed work.
+
+| Item | Value |
+| --- | --- |
+| Branch | `main` at `7fb71bd`, with this change uncommitted in the working tree |
+| Scope | settings, requirements, `.env.example`, `fly.toml` / `Dockerfile` comments, deployment tests, docs |
+| Deployment performed | **no** — and nothing was built, installed, migrated or refreshed |
+| External actions | none: no `pip install`, no Docker, no `fly`, no migration run, no `refresh_tips`, no network call, no commit |
+| Suite | 515 tests, all passing |
+| `tests_deployment_v1.py` | 15 tests, all passing |
+| `manage.py check` | no issues |
+| `manage.py makemigrations --check --dry-run` | no changes detected |
+| `git diff --check` | clean |
+
+### 8.1 What changed
+
+* **Settings.** `odds/odds/settings.py` no longer imports `dj_database_url` and no
+  longer reads `DATABASE_URL`: the stranded `DATABASE_URL = config(...)` line and
+  the commented-out import went with the branch they belonged to.
+  `DATABASES['default']` is the git-ignored SQLite file for every environment, so
+  an unset, empty or hostile `DATABASE_URL` now changes nothing at all, and the
+  three pooler-safety options are gone with the pooled deployment that needed
+  them.
+* **Deliberately unchanged.** The SQLite `DATABASES` entry, Django's own installed
+  apps (`admin`, `auth`, `sessions`, `contenttypes`), the existing migrations, the
+  `SnapshotV1` model, `DatabaseSnapshotProvider`, `refresh_v1` and `refresh_tips`
+  are untouched: the versioned snapshot table still lives in that same file, which
+  is why `fly.toml` keeps `release_command = "python manage.py migrate --noinput"`.
+* **Pins.** `dj-database-url==3.1.2` and `psycopg[binary]==3.3.6` were removed
+  from `odds/requirements.txt`. `gunicorn==26.2.0` stays: the container still
+  serves the app with gunicorn.
+* **Configuration.** `odds/.env.example` no longer documents `DATABASE_URL`, and
+  the `postgres://USER:PASSWORD@HOST:5432/DBNAME` shape went with it. `fly.toml`
+  and `Dockerfile` lost the `fly postgres attach` and `psycopg[binary]` claims
+  from their comments; no instruction, port, health check or release action
+  changed.
+* **Tests.** The two obsolete assertions were replaced in the same diff, keeping
+  the module at 15 tests:
+  `test_database_url_selects_postgres_with_its_own_credentials` became
+  `test_database_url_selects_nothing_and_no_credential_reaches_the_mapping` (a
+  credential-shaped `DATABASE_URL` is set, the mapping must stay SQLite, and no
+  `USER` / `HOST` / `PORT` key may appear), and
+  `test_postgres_connection_options_are_pooling_safe` became
+  `test_postgres_pooling_options_are_gone` (no connection option may be
+  configured for any input). `EnvExampleTests` now asserts the *absence* of a
+  `DATABASE_URL` key and of any `postgres://` line instead of asserting that one
+  is present.
+* **Docs.** `README.md`, `docs/DEPLOYMENT.md` (§1, §3, §4, §8, §10) and
+  `docs/RUNBOOK.md` (§2, §6, §9, §10, §11) were corrected: the secret tables, the
+  first-time setup steps, the troubleshooting rows and the environment-variable
+  table carry no database entry and no `fly postgres` command any more. Section 7
+  above is kept as history, with a superseded banner.
+
+### 8.2 Open gap this leaves
+
+The database is now a file on the machine's own filesystem, so a snapshot written
+by `manage.py refresh_tips` does not survive a redeploy, and nothing schedules
+that command. Recorded as a gap in `docs/DEPLOYMENT.md` §10; a volume, a shared
+cache and a scheduler all remain future work, out of scope for this correction.
+
+
+## 9. Published-content reader and the writer precondition (2026-10-04)
+
+Batch B makes reviewed published content the reader a deployment answers from, and
+makes the out-of-band writer refuse to run against anything that cannot store. It
+is a wiring and safety change: no request-path behaviour, envelope, query
+parameter or error code changed.
+
+| Item | Value |
+| --- | --- |
+| Branch | `main`, with batch A (content reader, canonical digest rule, deployment docs) uncommitted in the working tree |
+| Scope | `apps.py`, `management/commands/refresh_tips.py`, `tests_startup_v1.py`, `tests_refresh_v1.py`, `tests_deployment_v1.py`, the new `tests_publishedcontent_reader_v1.py`, and the docs |
+| Deployment performed | **no** - nothing was built, installed, migrated, served or deployed |
+| External actions | none: no network call, no `pip install`, no Docker, no `fly`, no migration run, no `refresh_tips` against a source, no commit |
+| Suite | 605 tests, all passing (was 575: +16 new module, +7 writer precondition, +4 image content, +3 startup) |
+| `manage.py check` | no issues |
+| `manage.py makemigrations --check --dry-run` | no changes detected |
+| `git diff --check` | clean |
+
+### 9.1 What changed
+
+* **The install point installs the read-only reader.**
+  `apps.AlltipsScraperConfig.ready()` now installs
+  `jsoncontent_v1.JsonSnapshotProvider()` instead of
+  `storage_v1.DatabaseSnapshotProvider()`. The body keeps its shape: one seam
+  accessor import, one provider import, one unconditional call, no branch and no
+  configuration read. The provider defaults its content root to the directory this
+  package ships, so the artifacts inside the image are what a deployment publishes.
+* **`refresh_tips` refuses to run unless the durable provider is installed.** The
+  command gained one precondition, decided before `--type` is resolved: when the
+  installed provider is not `storage_v1.DatabaseSnapshotProvider`, the run reports
+  `refresh refused: the installed snapshot provider is not writable durable
+  storage` with return code `3`. Django prints that as one `CommandError:` line on
+  stderr and exits `3`; `--traceback` re-raises it instead. Such a run fetches
+  nothing, reads no row, writes no row, prints no report line and logs nothing.
+* **Exit statuses are now four.** `0` when every selected type was published, `1`
+  when a type was refused, `2` when `--type` named a type the registry does not
+  publish, and `3` when the installed provider cannot store - and the `3` is
+  decided first, so it wins over a `2`.
+* **Tests.** `tests_startup_v1.py` pins the new install (reader identity, content
+  root, read-only seam, a durable row left untouched); `tests_refresh_v1.py` adds
+  the precondition coverage (the deployed reader, the seam's in-memory default, an
+  arbitrary three-method object, an unusable `--type`, `--dry-run`, stderr with
+  exit `3`, and `--traceback`) and installs the durable provider for the command
+  tests that must still succeed; the new `tests_publishedcontent_reader_v1.py`
+  serves `/api/v1/tips/` from a reader whose content root the test writes (envelope,
+  zero database queries, both `503` states, a published record winning over a
+  stored row, and a refused write); and `tests_deployment_v1.py` adds the
+  image/content contract (the manifest ships, the copied service directory holds
+  it, and the build context excludes nothing under it).
+* **Docs.** `README.md`, `docs/API_V1_CONTRACT.md`, `docs/RUNBOOK.md` (sections
+  4.1, 4.2, 7, 11), `docs/DEPLOYMENT.md` (sections 1, 9, 10) and
+  `docs/DATA_CONTRACT.md` section 12 now name the published content as the deployed
+  reader, the durable store as writer-only, and the `3` refusal.
+
+### 9.2 What deliberately did not change
+
+* The request path: `views_v1.py`, `urls_v1.py`, `serializers_v1.py` and
+  `readmodel_v1.py` are untouched, so the route, the query parameters, the envelope
+  and every error code are exactly as sprint 1C published them.
+* The durable store: `storage_v1.py`, the `SnapshotV1` model and its migration are
+  unchanged, and the provider is still installed by everything that wants it - only
+  the deployment's own install point chose the reader.
+* The writer itself: `refresh_v1` still decides, stores and reports exactly as
+  before; only the command's precondition is new.
+* The shipped content: `content/v1/manifest.json` is still the tracked empty
+  manifest (`{"schema_version": 1, "snapshots": {}}`), so this batch publishes no
+  tip type.
+
+### 9.3 Open gap this leaves
+
+The deployed reader publishes what the image ships, and the writer's rows are not
+read by it, so refreshing a deployment's snapshots would need a durable provider
+installed there - which is a storage decision (a volume or a managed database), not
+a configuration flag. Until then, a type appears on a deployment only through a
+reviewed change to the content directory and a redeploy. Recorded as a gap in
+`docs/DEPLOYMENT.md` section 10.

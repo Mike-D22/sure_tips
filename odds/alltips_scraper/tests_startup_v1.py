@@ -1,19 +1,24 @@
-"""Startup tests for the durable snapshot provider.
+"""Startup tests for the snapshot provider this deployment installs.
 
 Why this module exists
 ----------------------
-``storage_v1`` is only the durable provider; nothing reads or writes through it
-until the app that owns the table installs it. That install happens in
-``AlltipsScraperConfig.ready()``, which is exactly the wiring a suite tends to
-leave untested: a provider that is never installed, or installed only after a
-request has already been answered, stays invisible until a deployment depends on
-it.
+``jsoncontent_v1`` is the read-only published-content reader; nothing reads
+through it until the app that owns the versioned route installs it. That install
+happens in ``AlltipsScraperConfig.ready()``, which is exactly the wiring a suite
+tends to leave untested: a provider that is never installed, or installed only
+after a request has already been answered, stays invisible until a deployment
+depends on it.
 
-So this module pins the wiring end to end. The long-lived claim is that the
-versioned endpoint answers from a durable row through the seam it always used;
-the wiring claim is that Django itself selects the one declared app config, and
-that the config's ``ready()`` installs the durable provider while reading neither
-a database nor any configuration.
+So this module pins the wiring end to end. The deployed claim is that the
+versioned endpoint answers from reviewed published content through the seam it
+always used, and never from the snapshot table; the wiring claim is that Django
+itself selects the one declared app config, and that the config's ``ready()``
+installs the read-only reader while reading neither a database nor any
+configuration.
+
+``storage_v1`` is still exercised here, in the two places this module needs it: a
+row the durable store holds is invisible to the reader this process installs, and
+the seam refuses a write instead of publishing a shipped artifact.
 
 Ground rules
 ------------
@@ -37,7 +42,13 @@ from django.apps import apps
 from django.test import SimpleTestCase, TestCase
 from django.urls import resolve
 
+from . import jsoncontent_v1
 from .apps import AlltipsScraperConfig
+from .jsoncontent_v1 import (
+    CANONICAL_CONTENT_ROOT,
+    JsonSnapshotProvider,
+    ReadOnlyContentError,
+)
 from .models import SnapshotV1
 from .readmodel_v1 import (
     SNAPSHOT_KEYS,
@@ -295,8 +306,8 @@ class ReadySourceTests(SimpleTestCase):
             {
                 'readmodel_v1',
                 'set_snapshot_provider',
-                'storage_v1',
-                'DatabaseSnapshotProvider',
+                'jsoncontent_v1',
+                'JsonSnapshotProvider',
             },
         )
 
@@ -330,7 +341,7 @@ class ReadySourceTests(SimpleTestCase):
         provider = call.args[0]
         self.assertIsInstance(provider, ast.Call)
         self.assertIsInstance(provider.func, ast.Name)
-        self.assertEqual(provider.func.id, 'DatabaseSnapshotProvider')
+        self.assertEqual(provider.func.id, 'JsonSnapshotProvider')
         self.assertEqual(provider.args, [])
         self.assertEqual(provider.keywords, [])
 
@@ -343,7 +354,7 @@ class ReadySourceTests(SimpleTestCase):
                 self.assertNotIn(token, source.lower())
 
         self.assertIn(
-            'set_snapshot_provider(DatabaseSnapshotProvider())', source)
+            'set_snapshot_provider(JsonSnapshotProvider())', source)
 
 
 class ReadyInstallationTests(TestCase):
@@ -355,13 +366,25 @@ class ReadyInstallationTests(TestCase):
         self.addCleanup(set_snapshot_provider, None)
         self.config = apps.get_app_config(APP_LABEL)
 
-    def test_ready_installs_the_durable_provider(self):
+    def test_ready_installs_the_published_content_reader(self):
         self.assertNotIsInstance(
-            get_snapshot_provider(), DatabaseSnapshotProvider)
+            get_snapshot_provider(), JsonSnapshotProvider)
 
         self.config.ready()
 
         self.assertIsInstance(
+            get_snapshot_provider(), JsonSnapshotProvider)
+
+    def test_the_installed_reader_is_rooted_at_the_shipped_content_directory(self):
+        self.config.ready()
+
+        self.assertEqual(
+            get_snapshot_provider().root, CANONICAL_CONTENT_ROOT)
+
+    def test_the_installed_reader_is_not_the_durable_store(self):
+        self.config.ready()
+
+        self.assertNotIsInstance(
             get_snapshot_provider(), DatabaseSnapshotProvider)
 
     def test_ready_replaces_the_default_provider_rather_than_keeping_it(self):
@@ -377,7 +400,7 @@ class ReadyInstallationTests(TestCase):
         self.config.ready()
         second = get_snapshot_provider()
 
-        self.assertIsInstance(second, DatabaseSnapshotProvider)
+        self.assertIsInstance(second, JsonSnapshotProvider)
         self.assertIsNot(first, second)
         self.assertIs(get_snapshot_provider(), second)
 
@@ -395,33 +418,49 @@ class ReadyInstallationTests(TestCase):
         with self.assertNoLogs(LOGGER_NAME, level='ERROR'):
             self.assertIsNone(load_snapshot(TIP_TYPE))
 
-    def test_the_seam_writes_and_reads_the_durable_row_after_the_install(self):
+    def test_the_seam_reads_published_content_and_refuses_a_write(self):
         self.config.ready()
-        record = store_snapshot(TIP_TYPE, PAYLOAD, fetched_at=FETCHED_AT)
 
+        # Nothing is published under the shipped manifest, so the seam answers
+        # "no snapshot" for every key, and the empty deployment is not a failure.
+        with self.assertNoLogs(jsoncontent_v1.LOGGER_NAME, level='ERROR'):
+            self.assertIsNone(load_snapshot(TIP_TYPE))
+            self.assertIsNone(load_snapshot(OTHER_TYPE_KEY))
+
+        # The installed reader has nothing to write to, so the seam refuses the
+        # write instead of letting a caller believe an artifact was published.
+        with self.assertRaises(ReadOnlyContentError):
+            store_snapshot(TIP_TYPE, PAYLOAD, fetched_at=FETCHED_AT)
+        self.assertFalse(SnapshotV1.objects.exists())
+
+    def test_a_row_the_durable_store_holds_is_not_what_this_reader_publishes(self):
+        record = DatabaseSnapshotProvider().store(
+            TIP_TYPE, PAYLOAD, fetched_at=FETCHED_AT)
+
+        self.config.ready()
+
+        # The durable store's own record is intact, and it is simply not what a
+        # reader installed by startup answers from.
         self.assertEqual(set(record), set(SNAPSHOT_KEYS))
         self.assertEqual(record['schema_version'], SNAPSHOT_SCHEMA_VERSION)
-        self.assertEqual(load_snapshot(TIP_TYPE), record)
-
         row = SnapshotV1.objects.get(pk=TIP_TYPE)
-        self.assertEqual(row.type_key, TIP_TYPE)
-        self.assertEqual(row.payload, PAYLOAD)
         self.assertEqual(row.payload_sha256, PAYLOAD_SHA256)
-        self.assertEqual(row.fetched_at, FETCHED_AT)
-        self.assertIsNone(load_snapshot(OTHER_TYPE_KEY))
+        with self.assertNoLogs(jsoncontent_v1.LOGGER_NAME, level='ERROR'):
+            self.assertIsNone(load_snapshot(TIP_TYPE))
 
-    def test_a_later_install_leaves_a_stored_row_alone(self):
-        self.config.ready()
-        record = store_snapshot(TIP_TYPE, PAYLOAD, fetched_at=FETCHED_AT)
-
-        self.config.ready()
+    def test_a_later_install_changes_nothing_the_reader_holds(self):
         self.config.ready()
 
-        row = SnapshotV1.objects.get(pk=TIP_TYPE)
-        self.assertEqual(SnapshotV1.objects.count(), 1)
-        self.assertEqual(row.payload_sha256, PAYLOAD_SHA256)
-        self.assertEqual(row.fetched_at, FETCHED_AT)
-        self.assertEqual(load_snapshot(TIP_TYPE), record)
+        self.config.ready()
+        self.config.ready()
+
+        # Every install leaves the same kind of reader behind, and the one thing
+        # it reads is still the content the package ships.
+        self.assertIsInstance(
+            get_snapshot_provider(), JsonSnapshotProvider)
+        with self.assertNoLogs(jsoncontent_v1.LOGGER_NAME, level='ERROR'):
+            self.assertIsNone(load_snapshot(TIP_TYPE))
+        self.assertFalse(SnapshotV1.objects.exists())
 
     def test_every_install_hands_the_seam_a_provider_it_accepts(self):
         for _ in range(3):
@@ -439,9 +478,11 @@ class ReadyInstallationTests(TestCase):
 class DurableEndpointTestCase(OfflineGuardMixin, TestCase):
     """The endpoint answering from a durable row, socket layer disabled.
 
-    The provider is installed the way startup installs it, and rows are written
-    through ``store_snapshot()``, so a request travels the whole path this commit
-    adds: seam, installed provider, table, and back out through the serializers.
+    The provider here is the durable store, installed explicitly rather than by
+    startup, because a stored row is what the out-of-band writer publishes into
+    and this module keeps proving the endpoint still answers it. The reader a
+    deployment actually installs is pinned in
+    ``tests_publishedcontent_reader_v1.py``.
     """
 
     def setUp(self):

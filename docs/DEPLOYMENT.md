@@ -15,6 +15,12 @@ those files honest.
 > `manage.py check --deploy`, the Django test suite and a static review of the
 > shipped files. Treat the first `fly deploy` as the moment the image itself is
 > first exercised.
+>
+> **Database scope (2026-10-03):** the Fly Managed PostgreSQL design originally
+> planned here — `fly postgres create` / `attach` and a `DATABASE_URL` secret —
+> was removed. `odds/odds/settings.py` reads no `DATABASE_URL` and the service
+> runs on its local SQLite file in every environment, so there is no database
+> step in §4 and no database secret in §3. See `docs/AUDIT.md` §8.
 
 ## 1. What ships
 
@@ -23,8 +29,9 @@ those files honest.
 | `Dockerfile` | repository root | `python:3.12-slim`, gunicorn, unprivileged `appuser` (uid 10001) |
 | `.dockerignore` | repository root | keeps `odds/.env`, `odds/db.sqlite3`, venvs and bytecode out of the build context |
 | `fly.toml` | repository root | placeholder app/region, non-secret `[env]` (including the six transport values), release command, HTTPS, health check, no committed VM size |
-| `DATABASE_URL` support | `odds/odds/settings.py` | PostgreSQL when set (pooling-safe: no connection reuse, no server-side cursors, no prepared statements), the local SQLite file when not |
-| Pinned dependencies | `odds/requirements.txt` | `gunicorn`, `psycopg[binary]`, `dj-database-url` |
+| Database | `odds/odds/settings.py` | the local, git-ignored SQLite file `odds/db.sqlite3`, the same in development and in the container: no `DATABASE_URL`, no PostgreSQL, no connection options |
+| Pinned dependencies | `odds/requirements.txt` | `gunicorn` (the container's WSGI server), Django, and the scraping stack |
+| Published content | `odds/alltips_scraper/content/v1/` | the reviewed canonical JSON the versioned endpoint is served from: it ships inside the image and is never written at runtime |
 | Deployment contract tests | `odds/alltips_scraper/tests_deployment_v1.py` | pins the decisions above |
 
 Deliberately **not** part of this image or this sprint:
@@ -34,6 +41,9 @@ Deliberately **not** part of this image or this sprint:
   Django admin would render unstyled; see §10);
 * no scheduler, no Celery, no automatic `refresh_tips` — the snapshot is
   refreshed out of band only;
+* no scheduler, no Celery and no automatic `refresh_tips`: the versioned endpoint
+  is served from published content, and the writer refuses to run (exit status `3`)
+  against the read-only reader this image installs;
 * no change to the six legacy routes, the versioned route, or their envelopes.
 
 ## 2. Prerequisites
@@ -50,7 +60,6 @@ Deliberately **not** part of this image or this sprint:
 | Name | Kind | Set with | Notes |
 | --- | --- | --- | --- |
 | `SECRET_KEY` | **secret** | `fly secrets set SECRET_KEY=…` | Generate a fresh one; never reuse a development key. |
-| `DATABASE_URL` | **secret** | set automatically by `fly postgres attach` | Carries the database password. |
 | `DEFAULT_FROM_EMAIL` | `[env]` in `fly.toml` | committed | Not a secret. |
 | `SCRAPE_URL` | `[env]` in `fly.toml` | committed | Upstream base URL, not a credential. |
 | `ALLOWED_HOSTS` | `[env]` in `fly.toml` | committed | Must contain `<app>.fly.dev`, or every request is `400 DisallowedHost`. |
@@ -95,21 +104,15 @@ Run every command from the repository root.
 #    <app>.fly.dev entry in ALLOWED_HOSTS before the first deploy.
 fly apps create <app-name>
 
-# 2. Create the PostgreSQL cluster and attach it. Attaching injects DATABASE_URL
-#    as a secret; no file in this repository is edited by it.
-fly postgres create --name oddmate-db
-fly postgres attach --app <app-name> oddmate-db
-#    The app opens connections with CONN_MAX_AGE=0, with server-side cursors and
-#    prepared statements disabled, so a pooler endpoint is safe here.
-
-# 3. The application secret (see §3.1).
+# 2. The application secret (see §3.1).
 fly secrets set SECRET_KEY=$secret
 
-# 4. Deploy.
+# 3. Deploy. There is no database step: the service runs on its local SQLite
+#    file, so no cluster is created and no DATABASE_URL secret is set.
 fly deploy
 ```
 
-Replace `<app-name>` and `oddmate-db` with the real names, and replace the
+Replace `<app-name>` with the real name, and replace the
 placeholders inside `fly.toml` (`app`, `primary_region`, `[env] ALLOWED_HOSTS`)
 before the first deploy. `fly deploy` against an unfilled template fails fast,
 which is intended: this repository does not get to guess the identity of an app it
@@ -182,8 +185,8 @@ docker run --rm --entrypoint sh sure-tips-api:local -c "cd /app/odds && gunicorn
 ```
 
 `--env-file odds/.env` gives the container the same local configuration as the
-development server. Pass `-e DATABASE_URL=…` instead when it must talk to a real
-PostgreSQL.
+development server. Nothing else has to be passed: the container uses the same
+SQLite file, so there is no database endpoint to point it at.
 
 ## 9. Operating the service
 
@@ -193,15 +196,18 @@ fly ssh console -C "python manage.py check --deploy"     # deployed configuratio
 fly ssh console -C "python manage.py migrate --noinput"  # only if a release was skipped
 ```
 
-Refreshing the snapshot is out of band and manual. It is the only writer of the
-versioned table and it does fetch upstream:
+Refreshing the durable snapshot is out of band and manual, and it needs the durable
+provider to be installed: `manage.py refresh_tips` refuses the whole run (exit
+status `3`) against any other one, which is the reader this image installs.
+Publishing a type on a deployment is therefore a reviewed change to
+`odds/alltips_scraper/content/v1/` rather than a refresh:
 
 ```powershell
-fly ssh console -C "python manage.py refresh_tips"
+fly ssh console -C "python manage.py refresh_tips"   # refused: the deployed reader is read-only
 ```
 
-Nothing schedules it: the versioned endpoint keeps answering `503` for a type
-that has never been refreshed.
+Nothing schedules it: the versioned endpoint answers `503` for a type the shipped
+manifest does not name.
 
 ## 10. Known gaps and deferrals
 
@@ -227,6 +233,13 @@ that has never been refreshed.
   `<app>.fly.dev` host in `[env] ALLOWED_HOSTS` are placeholders, and no `[[vm]]`
   block is committed: the app's identity and machine size are decided when the app
   is created, so the first deploy starts with `fly apps create` and a short edit.
+* **No managed database.** The service runs on the git-ignored SQLite file
+  `odds/db.sqlite3`, which lives in the machine's own filesystem. Nothing is
+  configured to persist it across a deploy, so a row written by
+  `manage.py refresh_tips` does not survive a redeploy. The deployed reader is the
+  read-only published-content reader, so the endpoint is not served from that table
+  in any case, and a refresh is refused there (exit status `3`). A volume or a
+  managed database is future work; this sprint only removed the old PostgreSQL plan.
 * **No `CSRF_TRUSTED_ORIGINS`.** The API is read-only public `GET`s, so no
   browser POST surface needs it yet. A future form or dashboard on the deployed
   origin will.

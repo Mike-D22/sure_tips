@@ -3,6 +3,8 @@
 Date: 2026-09-28 · Sprint 1C (versioned tips endpoint)
 Snapshot storage revised: 2026-09-29 (durable row store and out-of-band writer; the
 request path is unchanged)
+Snapshot source revised: 2026-10-04 (the installed reader is the read-only
+published-content reader; the writer runs only against the durable store)
 
 | Item | Value |
 | --- | --- |
@@ -10,9 +12,10 @@ request path is unchanged)
 | Route | `GET /api/v1/tips/` |
 | Namespaced route name | `tips_v1:tips` |
 | Versioned modules | `urls_v1.py`, `views_v1.py`, `readmodel_v1.py`, `serializers_v1.py` |
-| Snapshot store (`readmodel_v1` provider) | `storage_v1.py`, installed by `apps.AlltipsScraperConfig.ready()` |
-| Out-of-band writer (not in the request path) | `refresh_v1.py`, driven by `manage.py refresh_tips` |
-| Contract tests | `odds/alltips_scraper/tests_api_v1.py`, plus `tests_storage_v1.py`, `tests_startup_v1.py` and `tests_refresh_v1.py` for the store, its install and the writer |
+| Snapshot source (`readmodel_v1` provider) | `jsoncontent_v1.py` (`JsonSnapshotProvider`), installed by `apps.AlltipsScraperConfig.ready()`: the read-only canonical content under `odds/alltips_scraper/content/v1/` |
+| Durable store (writer-only) | `storage_v1.py` (`DatabaseSnapshotProvider`), one row per type key in the `SnapshotV1` table |
+| Out-of-band writer (not in the request path) | `refresh_v1.py`, driven by `manage.py refresh_tips`, which runs only while the durable store is the installed provider |
+| Contract tests | `odds/alltips_scraper/tests_api_v1.py`, plus `tests_jsoncontent_v1.py`, `tests_publishedcontent_reader_v1.py`, `tests_storage_v1.py`, `tests_startup_v1.py` and `tests_refresh_v1.py` for the content reader, its install, the durable store and the writer |
 
 This document records the implemented contract of the versioned endpoint only. The
 legacy surface it sits beside is documented in `docs/RUNBOOK.md` and frozen in
@@ -27,9 +30,10 @@ under §12 of `docs/DATA_CONTRACT.md`.
 * The route is published through the `tips_v1` namespace as `tips_v1:tips`, so a
   caller can reverse it without knowing the path.
 * The endpoint is offline by design. Its only data source is a snapshot read through
-  `readmodel_v1.load_snapshot()`: the versioned layer imports no scraper module, no
-  parser, no handler, no cache helper and no HTTP client, so a request can never
-  start a fetch, a scrape, a refresh or a cache fill.
+  `readmodel_v1.load_snapshot()`, which in a deployment is the published content the
+  image ships: the versioned layer imports no scraper module, no parser, no handler,
+  no cache helper and no HTTP client, so a request can never start a fetch, a scrape,
+  a refresh or a cache fill.
 * In scope: the route, the three query parameters, the success envelope and the
   error bodies. Out of scope: the legacy endpoints, the legacy parser contract, and
   the deferred work listed in section 6.
@@ -149,17 +153,25 @@ Every error body has the same shape: `api_version` plus an `error` object whose
 
 * The snapshot is read through the `readmodel_v1` seam, whose installed provider is
   chosen once per process at startup (`apps.AlltipsScraperConfig.ready()`): the
-  durable `storage_v1.DatabaseSnapshotProvider`, which keeps one row per type key in
-  the `SnapshotV1` table. A stored row is either usable or absent — a row that fails
-  its own record version, digest, payload shape or timestamp is answered as "no
-  snapshot", never published and never a `500`.
+  read-only `jsoncontent_v1.JsonSnapshotProvider`, which reads reviewed canonical
+  JSON from the content directory the image ships
+  (`odds/alltips_scraper/content/v1/`: one `manifest.json` plus one payload file per
+  type key the manifest names). A published record is either usable or absent — a
+  record that fails its own record version, digest, payload shape or timestamp is
+  answered as "no snapshot", never published and never a `500`. An empty manifest
+  and a type key no manifest names are the two states an unpublished deployment is
+  allowed to be in, and both are answered as "no snapshot" without being reported
+  as failures.
 * **The request path is read-only and holds no writer**: no request stores, clears or
-  refreshes a snapshot, and none performs a network call. A server whose store holds
-  no usable row answers `503` `source_unavailable`, which is the designed behaviour,
-  not a defect.
-* The snapshot is populated **out of band**, by `manage.py refresh_tips` driving
-  `refresh_v1.py`. That writer is deliberately outside this request-path contract and
-  no route can reach it; it is documented in `docs/RUNBOOK.md` section 4.2.
+  refreshes a snapshot, and none performs a network call. A server whose published
+  content names no usable record answers `503` `source_unavailable`, which is the
+  designed behaviour, not a defect.
+* The deployed reader and the writer are two different stores. The reader publishes
+  reviewed content; `manage.py refresh_tips` driving `refresh_v1.py` writes the
+  durable `SnapshotV1` table instead, and refuses the whole run (exit status `3`,
+  before it resolves a type) unless `storage_v1.DatabaseSnapshotProvider` is the
+  installed provider. That writer is deliberately outside this request-path contract
+  and no route can reach it; it is documented in `docs/RUNBOOK.md` section 4.2.
 * `filter.timezone` is echoed but never applied, so a `200` is not evidence that a
   timezone-aware day window was honoured.
 * Deferred, and deliberately not implemented in this sprint:
@@ -173,9 +185,10 @@ Every error body has the same shape: `api_version` plus an `error` object whose
 ## 7. Verification and compatibility
 
 The contract is covered by offline tests in
-`odds/alltips_scraper/tests_api_v1.py`, with the snapshot store, its startup install
-and the out-of-band writer covered by `tests_storage_v1.py`, `tests_startup_v1.py`
-and `tests_refresh_v1.py`.
+`odds/alltips_scraper/tests_api_v1.py`, with the published-content reader covered by
+`tests_jsoncontent_v1.py` and `tests_publishedcontent_reader_v1.py`, and the durable
+store, its startup install and the out-of-band writer by `tests_storage_v1.py`,
+`tests_startup_v1.py` and `tests_refresh_v1.py`.
 
 ```powershell
 .\.venv\Scripts\python.exe .\odds\manage.py check

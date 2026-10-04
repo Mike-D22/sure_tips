@@ -39,11 +39,11 @@ Copy-Item odds\.env.example odds\.env
 The repository-root `.venv/` and `odds/.env` are both git-ignored; never commit
 either.
 
-The same file also pins the container-only dependencies (`gunicorn`,
-`psycopg[binary]`, `dj-database-url`). `gunicorn` cannot even be imported on
-Windows — it needs the POSIX-only `fcntl` module — which is expected: local
-development runs the Django development server (section 3) while the container
-runs gunicorn.
+The same file also pins the container-only dependency (`gunicorn`). `gunicorn`
+cannot even be imported on Windows — it needs the POSIX-only `fcntl` module —
+which is expected: local development runs the Django development server
+(section 3) while the container runs gunicorn. There is no database driver in
+the list: the service runs on the SQLite support that ships with Python.
 
 To confirm the environment (from the repository root):
 
@@ -85,16 +85,29 @@ key.
 ### 4.1 Versioned endpoint (`/api/v1/tips/`)
 
 `GET /api/v1/tips/` is **not** in the table above and is not part of the legacy
-contract: it has no `cached` flag, it never scrapes, and it answers from a stored
-snapshot. The request path only ever reads, so a server that holds no usable
-snapshot returns `503` by design instead of scraping; section 4.2 is how a
-snapshot gets stored. Its contract is `docs/API_V1_CONTRACT.md`.
+contract: it has no `cached` flag, it never scrapes, and it answers from the
+snapshot this process installed at startup, which is the read-only published
+content under `odds/alltips_scraper/content/v1/` that the image ships. The request
+path only ever reads, so a server whose content names no usable record returns
+`503` by design instead of scraping. Its contract is `docs/API_V1_CONTRACT.md`;
+section 4.2 covers the out-of-band writer, which is refused unless the durable
+provider is installed.
 
-### 4.2 Populating the snapshot (`manage.py refresh_tips`)
+### 4.2 Populating the durable snapshot (`manage.py refresh_tips`)
 
 The one supported writer is the out-of-band management command `refresh_tips`.
 Nothing in the request path imports it, so no request can start a fetch, a scrape,
-a refresh or a cache fill. The snapshot table has to exist first:
+a refresh or a cache fill.
+
+It writes the durable store, so it runs only while the installed provider is
+`storage_v1.DatabaseSnapshotProvider`. Against any other one - the published-content
+reader a deployment starts with, the seam's own in-memory default, or an object that
+merely has the seam's three methods - it refuses the whole run before it resolves a
+type: one line, `refresh refused: the installed snapshot provider is not writable
+durable storage`, on stderr, and exit status `3`. Such a run fetches nothing, reads
+nothing, writes nothing and logs nothing.
+
+The snapshot table has to exist first:
 
 ```powershell
 .\.venv\Scripts\python.exe .\odds\manage.py migrate       # creates the snapshot table
@@ -141,8 +154,11 @@ type=<key> outcome=failed reason=<token>
   type that succeeded stays stored.
 * The exit status is `0` when every selected type was accepted (`ok`, or `empty` for
   a pinned empty payload; a dry run accepts without writing), `1` when any type was
-  refused, and `2` when `--type` named a type the registry does not publish, which is
-  how a scheduler or a cron job learns the outcome.
+  refused, `2` when `--type` named a type the registry does not publish, and `3` when
+  the installed provider is not the durable one. The `3` is decided before `--type`
+  is resolved, so a run against a provider that cannot store is refused as one
+  whatever the selection says, and it is how a scheduler or a cron job learns the
+  outcome.
 
 ## 5. Caching semantics
 
@@ -178,7 +194,6 @@ Everything is read from `odds/.env` via `python-decouple`; see
 | `ALLOWED_HOSTS` | no | `localhost,127.0.0.1,[::1]` | CSV; no wildcard default |
 | `CORS_ALLOW_ALL_ORIGINS` | no | `False` | dev-only opt-in |
 | `CORS_ALLOWED_ORIGINS` | no | `http://localhost:8000,http://127.0.0.1:8000` | CSV; ignored while the wildcard is on |
-| `DATABASE_URL` | no | empty (SQLite `odds/db.sqlite3`) | PostgreSQL URL; always wins when set. A deployment secret — `fly postgres attach` sets it, and it never belongs in a tracked file. PostgreSQL is configured pooling-safe (no connection reuse, no server-side cursors, no prepared statements); the SQLite default carries none of it. |
 | `DEFAULT_FROM_EMAIL` | yes | — | no default |
 | `SCRAPE_URL` | yes | — | upstream base URL, read at import time |
 | `FREESUPERTIPS_ENABLE_VERIFICATION` | no | `False` | settlement is not implemented; keep off |
@@ -189,6 +204,10 @@ Everything is read from `odds/.env` via `python-decouple`; see
 | `SECURE_HSTS_SECONDS` | no | `0` | transport: HSTS lifetime in seconds (`0` sends no header) |
 | `SECURE_HSTS_INCLUDE_SUBDOMAINS` | no | `False` | transport: HSTS `includeSubDomains` |
 | `SECURE_HSTS_PRELOAD` | no | `False` | transport: HSTS `preload` header value |
+
+There is no `DATABASE_URL` and no database variable of any kind: `settings.py`
+reads no connection string, and every environment uses the git-ignored SQLite
+file `odds/db.sqlite3`.
 
 The six transport values are explicit and independent: `settings.py` reads each
 one on its own and derives none of them from `DEBUG`, so the defaults above are
@@ -241,9 +260,11 @@ and `tests_offline_guard.py` disables the socket layer for every test and proves
 the fetch path fails closed with an error envelope instead of raising.
 
 The versioned surface is offline too: `tests_api_v1.py` reads through a provider
-double it installs itself, `tests_storage_v1.py` and `tests_startup_v1.py`
-exercise the real table in the test database, and `tests_refresh_v1.py` fakes the
-fetch layer and disables the socket layer as well.
+double it installs itself, `tests_jsoncontent_v1.py` reads temporary content
+directories, `tests_publishedcontent_reader_v1.py` serves the endpoint from them,
+`tests_storage_v1.py` and `tests_startup_v1.py` exercise the real table in the test
+database, and `tests_refresh_v1.py` fakes the fetch layer and disables the socket
+layer as well.
 
 Nothing touches `freesupertips.com` or any other host, and no test refreshes or
 regenerates a fixture. The contract these tests pin is documented in
@@ -274,8 +295,6 @@ Never log `SECRET_KEY`, SMTP credentials, or `SCRAPE_URL` values.
 | `UndefinedValueError: SECRET_KEY not found` | `odds/.env` missing; copy it from `.env.example`. |
 | `UndefinedValueError: SCRAPE_URL not found` | same — `utils.py` reads it at import time. |
 | `DisallowedHost` | add the host to `ALLOWED_HOSTS` in `odds/.env`. |
-| `ModuleNotFoundError: dj_database_url` | dependencies are out of date — re-run setup step 3 (sprint 1E-A1 added the pin). |
-| `ModuleNotFoundError: psycopg` | same — the pinned `psycopg[binary]` is what the PostgreSQL engine needs. |
 | `400 DisallowedHost` from a deployed host | add the host to `fly.toml` `[env] ALLOWED_HOSTS` and redeploy; a deployment never reads `odds/.env`. |
 | Local requests redirect to an `https://` URL | one of the six transport values is set in `odds/.env` (usually `SECURE_SSL_REDIRECT`); unset it locally — those six describe a deployment's transport policy. |
 | `uv venv` exits non-zero: "already exists" | the repository-root `.venv` is present; use `uv venv --clear --python 3.12 .venv` to rebuild. |
@@ -310,7 +329,7 @@ Never log `SECRET_KEY`, SMTP credentials, or `SCRAPE_URL` values.
   and the deliberate backlog.
 * Deployment files are tracked at the repository root — `Dockerfile`,
   `.dockerignore` and `fly.toml` — and no secret may ever be written into them:
-  `SECRET_KEY` and `DATABASE_URL` are Fly secrets, while `DEFAULT_FROM_EMAIL`,
+  `SECRET_KEY` is a Fly secret, while `DEFAULT_FROM_EMAIL`,
   `SCRAPE_URL`, `ALLOWED_HOSTS`, `PORT` and the six transport values
   (`SECURE_SSL_REDIRECT`, `SESSION_COOKIE_SECURE`, `CSRF_COOKIE_SECURE`,
   `SECURE_HSTS_SECONDS`, `SECURE_HSTS_INCLUDE_SUBDOMAINS`,
@@ -327,8 +346,6 @@ including the image-safety checks, is `docs/DEPLOYMENT.md`. The short version:
 
 ```powershell
 fly apps create <app-name>                           # then put the same name in fly.toml [app]
-fly postgres create --name oddmate-db
-fly postgres attach --app <app-name> oddmate-db       # DATABASE_URL, as a secret
 fly secrets set SECRET_KEY=<generated>                # see section 6
 fly deploy                                            # release_command: migrate only
 curl.exe https://<app-name>.fly.dev/api/health/       # the app name chosen above
@@ -339,12 +356,15 @@ What a deployment relies on, and what it deliberately does not do:
 * The container runs `gunicorn odds.wsgi:application` as the unprivileged
   `appuser` (uid 10001) on port 8080. It never runs `manage.py runserver`, never
   runs `collectstatic`, and never serves static files.
-* `DATABASE_URL` selects PostgreSQL; with it unset the git-ignored SQLite file is
-  the local default. Migrations are the only release action — no snapshot
-  refresh, no fixture load.
-* Liveness is `/api/health/`; there is no `/healthz`. `GET /api/v1/tips/` still
-  answers `503` until `manage.py refresh_tips` has stored a snapshot, and nothing
-  schedules that command.
+* The database is the git-ignored SQLite file `odds/db.sqlite3`, the same one
+  local development uses: there is no `DATABASE_URL`, no PostgreSQL and no
+  database secret. Migrations are the only release action — no snapshot refresh,
+  no fixture load.
+* Liveness is `/api/health/`; there is no `/healthz`. `GET /api/v1/tips/` answers
+  from the published content the image ships and returns `503` for a type the
+  shipped manifest does not name; nothing schedules a refresh, and
+  `manage.py refresh_tips` refuses to run (exit status `3`) against the read-only
+  reader this image installs.
 * Transport security is explicit, never inferred from `DEBUG`: `fly.toml` `[env]`
   sets `SECURE_SSL_REDIRECT`, secure session/CSRF cookies and one-year HSTS
   (with subdomains and preload), while a local `odds/.env` leaves the same six

@@ -26,12 +26,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Dependencies first: this layer is cached until odds/requirements.txt changes.
-# psycopg[binary] ships manylinux wheels, so no compiler is needed in the image.
+# Nothing native is compiled here: every pin ships a manylinux wheel, and the
+# database is Python's built-in SQLite support, which needs no server and no
+# driver package.
 COPY odds/requirements.txt ./odds/requirements.txt
 RUN pip install --no-cache-dir --requirement ./odds/requirements.txt
 
 # Unprivileged runtime account (uid 10001). It owns the copied tree so the
-# git-ignored SQLite fallback stays writable if DATABASE_URL is ever unset.
+# git-ignored SQLite database stays writable: it is the only database this image
+# has.
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 
 # Only the Django service directory is copied. odds/.env, odds/db.sqlite3 and

@@ -8,12 +8,14 @@
 # ALLOWED_HOSTS host - with the real values at that point, then deploy.
 # Deploying first fails fast instead of shipping under a guessed name.
 #
-# Nothing secret belongs in this file. SECRET_KEY and DATABASE_URL are Fly
-# secrets (`fly secrets set ...`, `fly postgres attach ...`); only the
-# non-secret values below live here, where anyone with the repository can read
-# them. DEFAULT_FROM_EMAIL and SCRAPE_URL are non-secret only while they carry
-# no credential: a real SMTP account's password, or a scrape URL with a token in
-# it, belongs in `fly secrets set`.
+# Nothing secret belongs in this file. SECRET_KEY is a Fly secret
+# (`fly secrets set ...`); only the non-secret values below live here, where
+# anyone with the repository can read them. There is no database secret to set:
+# the service runs on its local SQLite file (see odds/odds/settings.py) and never
+# reads a DATABASE_URL, so this file declares no database configuration at all.
+# DEFAULT_FROM_EMAIL and SCRAPE_URL are non-secret only while they carry no
+# credential: a real SMTP account's password, or a scrape URL with a token in it,
+# belongs in `fly secrets set`.
 #
 # See docs/DEPLOYMENT.md for the full procedure.
 # ---------------------------------------------------------------------------
