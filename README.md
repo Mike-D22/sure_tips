@@ -30,6 +30,21 @@ Backend repository for the **OddMate** sports-tips product (app label
 > [`docs/API_V1_CONTRACT.md`](docs/API_V1_CONTRACT.md) and
 > [`docs/RUNBOOK.md`](docs/RUNBOOK.md) section 4.2.
 
+> **Initial deployment scope (sprint 1K, 2026-10-10):** the first deployment is a
+> **read-only static-v1 service** — `GET /api/health/` plus `GET /api/v1/tips/`,
+> answered from the reviewed canonical JSON committed under
+> `odds/alltips_scraper/content/v1/` and shipped inside the image. That reader is
+> local, offline and database-free at runtime; content is published only by
+> validating a candidate offline, reviewing it, committing it and rebuilding the
+> image; and the empty manifest means a supported type key no publication names is
+> answered `503` `source_unavailable` by design. No Fly volume, managed database,
+> Redis/Upstash, scheduler, worker, runtime cache, authentication, payments or
+> entitlements are part of it, and no persistence architecture is selected. The six
+> legacy routes stay frozen and routable but are **outside** this guarantee — they
+> can still call upstream synchronously. See
+> [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) §1.1 and
+> [`docs/RUNBOOK.md`](docs/RUNBOOK.md) §11.1. Nothing was built or deployed.
+
 ## Repository layout
 
 - `odds/` — Django backend service (the tips scraper API).

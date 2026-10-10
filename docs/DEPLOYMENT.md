@@ -52,6 +52,43 @@ Deliberately **not** part of this image or this sprint:
   through the seam and needs no shared cache (the legacy `LocMemCache` is unchanged
   and per process).
 
+### 1.1 Initial static-v1 deployment scope (2026-10-10, sprint 1K)
+
+The first deployment is a **read-only static-v1 service**. Its public surface is
+`GET /api/health/` plus the versioned read path `GET /api/v1/tips/`, answered from
+the reviewed canonical JSON committed under
+`odds/alltips_scraper/content/v1/` and shipped inside the image. At runtime that
+reader is local, offline and database-free: it opens files in the image and touches
+no database, no cache, no socket and no scheduler.
+
+Content reaches the image only through the reviewed loop, and there is no runtime
+publication: validate a candidate offline (`manage.py validate_v1_content --root
+<candidate>`, `docs/RUNBOOK.md` section 4.3), review it, commit the payload with its
+`manifest.json` entry, then build a new image and redeploy. `manage.py refresh_tips`
+is not an in-container publisher — it is refused (exit status `3`) against the
+read-only provider this image installs — and nothing in this image writes,
+refreshes or republishes content.
+
+The tracked manifest is intentionally empty, so a supported type key that no
+reviewed publication has named is answered `503` `source_unavailable` **by design**:
+that is the published-content answer for an unpublished key, not a runtime fault.
+
+**Deferred, with no architecture selected:** authentication and sessions, the admin,
+payments and entitlements, any cache or shared store (Fly volume, managed database,
+Redis/Upstash), a scheduler or worker, and any runtime content writer. No persistence
+architecture is chosen, `odds/db.sqlite3` stays a local git-ignored file, and the gap
+in section 10 stays open.
+
+**The six legacy routes are frozen but outside this guarantee.** They stay routable
+and unchanged, they are not part of the static-v1 surface, and they can perform
+synchronous upstream work inside a request, so this scope is not a claim that the
+whole public service is offline. Their production exposure is a separately deferred
+contract and security decision.
+
+**Nothing was built or deployed to record this scope.** It is a decision recorded by
+a documentation sprint: no image was built, no container was run, no `fly` command was
+executed, and no deployment occurred.
+
 ## 2. Prerequisites
 
 * `flyctl` — <https://fly.io/docs/flyctl/install/> (`fly version`).
@@ -267,7 +304,9 @@ manifest does not name.
   without an explicit persistence decision. This conclusion is configuration
   review, not a completed container or Fly verification. **Deferred without a
   decision:** use a persistent volume, use a managed database, or remove the
-  release-command/admin dependency in the initial deployment scope.
+  release-command/admin dependency in the initial deployment scope. **Sprint 1K keeps
+  this deferred** (see §1.1): the initial static-v1 scope makes no persistence
+  decision, and `/admin/` and session- or auth-dependent paths stay outside it.
 * **No `CSRF_TRUSTED_ORIGINS`.** The API is read-only public `GET`s, so no
   browser POST surface needs it yet. A future form or dashboard on the deployed
   origin will.

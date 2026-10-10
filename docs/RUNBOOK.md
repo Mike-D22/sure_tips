@@ -438,3 +438,32 @@ What a deployment relies on, and what it deliberately does not do:
   change to the Dockerfile, `.dockerignore`, `fly.toml` or the pinned
   dependencies has to be deliberate.
 
+### 11.1 Initial static-v1 deployment scope (2026-10-10, sprint 1K)
+
+The first deployment is a **read-only static-v1 service**: `GET /api/health/` plus
+the versioned read path `GET /api/v1/tips/` (§4.1), answered from the reviewed
+canonical JSON committed under `odds/alltips_scraper/content/v1/` and shipped in the
+image. That reader is local, offline and database-free at runtime — no database, no
+cache, no network, no scheduler — which is the scope `docs/DEPLOYMENT.md` section 1.1
+records.
+
+Content reaches the image only through the reviewed loop: validate the candidate
+offline (§4.3), review it, commit the payload and its manifest entry, build a new
+image and redeploy. There is no runtime publication: `manage.py refresh_tips` (§4.2)
+is not an in-container publisher, and against the read-only provider this image
+installs it refuses to run (exit status `3`). The tracked manifest is intentionally
+empty, so a supported type key that no publication names answers `503`
+`source_unavailable` by design — that is the expected answer for an unpublished key,
+not a fault to chase.
+
+Deferred, with no architecture selected: authentication and sessions, the admin,
+payments and entitlements, any cache or shared store (Fly volume, managed database,
+Redis/Upstash), a scheduler or worker, and any runtime content writer. No persistence
+architecture is chosen, and this sprint changed no configuration or code: it recorded
+the scope. No image was built, no container was run, and no deployment occurred.
+
+The six legacy routes in §4 stay frozen and routable. They are outside the static-v1
+guarantee and can perform synchronous upstream work inside a request, so this scope is
+**not** a claim that the whole public service is offline; their production exposure is
+a separate, deferred decision.
+

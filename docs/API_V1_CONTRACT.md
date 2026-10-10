@@ -8,6 +8,9 @@ published-content reader; the writer runs only against the durable store)
 Review tooling added: 2026-10-04 (a read-only candidate-content validator for the
 review that prepares a content change; the request path and the reader are
 unchanged)
+Deployment scope recorded: 2026-10-10 (the initial static-v1 deployment surface is
+`/api/health/` plus this route; the request path, the reader and the legacy
+surface are unchanged)
 
 | Item | Value |
 | --- | --- |
@@ -37,6 +40,10 @@ under §12 of `docs/DATA_CONTRACT.md`.
   image ships: the versioned layer imports no scraper module, no parser, no handler,
   no cache helper and no HTTP client, so a request can never start a fetch, a scrape,
   a refresh or a cache fill.
+* That offline guarantee covers this route and `/api/health/` only. The six legacy
+  paths stay frozen and routable, they are not part of the static-v1 guarantee,
+  and they can perform synchronous upstream work inside a request — so nothing
+  here claims the whole public service is offline.
 * In scope: the route, the three query parameters, the success envelope and the
   error bodies. Out of scope: the legacy endpoints, the legacy parser contract, and
   the deferred work listed in section 6.

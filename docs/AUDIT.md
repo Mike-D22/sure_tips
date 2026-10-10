@@ -790,12 +790,12 @@ nothing was built, migrated, served or deployed.
 * **The counts still hold.** The suite was re-run from the repository-root `.venv`
   and reported the same 654 tests and 1 skipped that `docs/RUNBOOK.md` section 7 and
   section 10 of this document record, so no count was edited anywhere.
-* **One stale count was observed and deliberately left alone.** `docs/RUNBOOK.md`
-  section 7 labels the deployment-contract module "the 15 deployment tests", and that
-  module holds 19 tests now: `manage.py test alltips_scraper.tests_deployment_v1`
-  reported `Ran 19 tests`, `OK`. The full-suite statement this sprint was scoped to
-  check matches, so the label is reported here rather than edited; sections 7 and 8
-  of this document record 15 because that is what the module held then.
+* **One stale count was observed and corrected.** `docs/RUNBOOK.md` section 7
+  labelled the deployment-contract module with 15 tests; the module holds 19 —
+  `manage.py test alltips_scraper.tests_deployment_v1` reported `Ran 19 tests`,
+  `OK`. That label now reads "the 19 deployment tests": it was corrected in the same
+  commit as this record, and the earlier sections of this document are left as they
+  were.
 * **This record is the only addition to this document**, appended after section 10
   rather than folded into it: sections 8, 9 and 10 record what those sprints did and
   are left as they were.
@@ -803,3 +803,68 @@ nothing was built, migrated, served or deployed.
   section 10 — no volume, no managed database, no `CSRF_TRUSTED_ORIGINS`,
   forward-only migrations, the template `fly.toml`, the unmade image — are
   unchanged.
+
+## 12. Initial static-v1 deployment scope declared (2026-10-10)
+
+Sprint 1K recorded what the approved first deployment is, so that the static v1
+architecture is stated in the documents rather than inferred from them. It is a
+documentation sprint: `docs/DEPLOYMENT.md` (a new §1.1 and one sentence in §10),
+`docs/RUNBOOK.md` (a new §11.1), `docs/API_V1_CONTRACT.md` (a scope line in the
+header and one bullet in §1) and `README.md` (one callout) changed, beside this
+record. No application code, URLconf, setting, installed app, middleware, template,
+management command, `Dockerfile`, `.dockerignore`, `fly.toml`, dependency,
+migration, content artifact, manifest, test or endpoint behaviour changed.
+
+| Item | Value |
+| --- | --- |
+| Branch | `main` at `1d2ced6d5e2e470ae2563ea63ff7324b41941f77`, one commit ahead of `origin/main` (`77a6ffcb21668545da2f0c4aefd00a109a4d5a81`), clean working tree and empty index |
+| Scope | `docs/DEPLOYMENT.md` §1.1 (new) and §10; `docs/RUNBOOK.md` §11.1 (new) and the §7 label; `docs/API_V1_CONTRACT.md` header and §1; `README.md`; this record and the corrected §11.2 bullet |
+| Deployment performed | **no** — no image was built, no container was run, no `fly` command was executed, nothing was served, and no deployment occurred |
+| External actions | none: no network call, no `docker`, no `fly`, no migration, no `refresh_tips`, no scrape, no publication, no staging and no commit |
+| Suite | `Found 654 test(s)` — `Ran 654 tests in 5.478s`, `OK (skipped=1)`, so the count `docs/RUNBOOK.md` §7 states still holds |
+| Deployment-contract module | `Found 19 test(s)` — `Ran 19 tests in 2.083s`, `OK` |
+| `manage.py check` | `System check identified no issues (0 silenced).` |
+| `manage.py makemigrations --check --dry-run` | `No changes detected` |
+| `manage.py check --deploy` | `System check identified no issues (0 silenced).`, run with `DEBUG=False` and the six transport values set; the process-scoped overrides were removed again after the run |
+| Shipped manifest | `odds/alltips_scraper/content/v1/manifest.json` unchanged: 38 bytes, `{"schema_version": 1, "snapshots": {}}`, sha256 `ec7e91f60d5ee0ef73754ea87adf2686bf251781e39308788bc5f361773e3b63` |
+| `git diff --check` | clean |
+
+### 12.1 What the declared scope is
+
+* **The first deployment's public surface is `/api/health/` plus
+  `GET /api/v1/tips/`.** The versioned path answers from the reviewed canonical
+  JSON committed under `odds/alltips_scraper/content/v1/` and shipped inside the
+  image, and at runtime that reader is local, offline and database-free: no
+  database, no cache, no network, no scheduler.
+* **Publication is a review-time loop, never a runtime path:** validate a candidate
+  offline (`manage.py validate_v1_content`, `docs/RUNBOOK.md` §4.3), review it,
+  commit the payload with its manifest entry, then build a new image and redeploy.
+  `manage.py refresh_tips` is not an in-container publisher; against the read-only
+  provider this image installs it is refused with exit status `3`.
+* **The empty manifest is intentional.** A supported type key that no reviewed
+  publication has named is answered `503` `source_unavailable` by design.
+* **Deferred, with no architecture selected:** authentication and sessions, the
+  admin, payments and entitlements, any cache or shared store (Fly volume, managed
+  database, Redis/Upstash), a scheduler or worker, and any runtime content writer.
+  No persistence architecture was chosen; `odds/db.sqlite3` stays a local,
+  git-ignored file and the gap in `docs/DEPLOYMENT.md` §10 stays open.
+* **The six legacy routes are frozen, routable and outside the static-v1
+  guarantee.** They can perform synchronous upstream work inside a request, so this
+  scope is not a claim that the whole public service is offline; their production
+  exposure stays a separately deferred contract and security decision.
+
+### 12.2 What deliberately did not change
+
+* **No route, app or middleware was removed or added.** `/admin/` is still routed,
+  and `django.contrib.admin`, `auth`, `sessions`, `messages` and `contenttypes` are
+  still installed.
+* **`fly.toml`, the `Dockerfile` and `.dockerignore` are untouched**, including the
+  `release_command` that file already carried: this sprint neither changed it nor
+  exercised it in a container, and no image was built.
+* **No persistence direction was selected.** The deferral is recorded, not decided:
+  no volume, no managed database, no Redis, no session backend was added.
+* **No image or Fly verification is claimed.** The gaps in `docs/DEPLOYMENT.md`
+  §10 remain configuration review.
+* **The stale deployment-test label is gone.** `docs/RUNBOOK.md` §7 reads "the 19
+  deployment tests", and the §11.2 bullet above is corrected from "left alone" to
+  "corrected", so no document presents the old label as current.
