@@ -39,11 +39,10 @@ Deliberately **not** part of this image or this sprint:
 * no `/healthz` alias — the existing `/api/health/` route is the liveness probe;
 * no WhiteNoise and no `collectstatic` — the image serves no static files (the
   Django admin would render unstyled; see §10);
-* no scheduler, no Celery, no automatic `refresh_tips` — the snapshot is
-  refreshed out of band only;
 * no scheduler, no Celery and no automatic `refresh_tips`: the versioned endpoint
-  is served from published content, and the writer refuses to run (exit status `3`)
-  against the read-only reader this image installs;
+  is served from published content, the snapshot stays out of band and manual, and
+  the writer refuses to run (exit status `3`) against the read-only reader this image
+  installs;
 * no change to the six legacy routes, the versioned route, or their envelopes;
 * no publication automation and no content writer at runtime:
   `manage.py validate_v1_content` is a developer/reviewer tool
@@ -151,8 +150,11 @@ curl.exe https://<app>.fly.dev/api/health/
 # {"status": "ok", "service": "sure-tips-api", "api_version": "legacy"}
 ```
 
-The versioned route answers from the stored snapshot and returns `503` until a
-snapshot has been written — that is by design, not a deployment failure:
+The versioned route answers from the published content the image ships, not from a
+written snapshot, so no write gates it: a deploy serves whatever the reviewed
+manifest names, and a type that manifest does not name answers `503`
+`source_unavailable` — by design, not a deployment failure. The tracked manifest is
+still the empty map (`{"schema_version": 1, "snapshots": {}}`):
 
 ```powershell
 curl.exe "https://<app>.fly.dev/api/v1/tips/?type=bet_of_the_day"
@@ -254,10 +256,24 @@ manifest does not name.
   read-only published-content reader, so the endpoint is not served from that table
   in any case, and a refresh is refused there (exit status `3`). A volume or a
   managed database is future work; this sprint only removed the old PostgreSQL plan.
+* **A release-machine migration does not supply a serving-machine database.**
+  The image excludes `odds/db.sqlite3`, and no volume or managed database shares
+  state between machines. The configured `release_command` runs `manage.py
+  migrate` on the one-off release machine's own ephemeral filesystem; when that
+  machine is discarded, any SQLite schema and data created there are not available
+  to a separate serving machine. The published-content reader does not need a
+  database — `/api/health/` and `GET /api/v1/tips/` read no database state — but
+  `/admin/` and any session- or auth-dependent path are not deployment-ready
+  without an explicit persistence decision. This conclusion is configuration
+  review, not a completed container or Fly verification. **Deferred without a
+  decision:** use a persistent volume, use a managed database, or remove the
+  release-command/admin dependency in the initial deployment scope.
 * **No `CSRF_TRUSTED_ORIGINS`.** The API is read-only public `GET`s, so no
   browser POST surface needs it yet. A future form or dashboard on the deployed
   origin will.
-* **No connection reuse.** `CONN_MAX_AGE = 0` means every request opens its own
-  database connection, and disabling server-side cursors and prepared statements
-  costs a little setup each time. That is the price of being safe against a
-  pooler endpoint; pooler-aware tuning is backlog, not this sprint.
+* **No connection reuse and no connection options.** Every request opens its own
+  SQLite connection, which is Django's default here: `CONN_MAX_AGE`,
+  `DISABLE_SERVER_SIDE_CURSORS` and `OPTIONS['prepare_threshold']` are not set,
+  because they were the old pooled-PostgreSQL path and are gone with it
+  (`odds/odds/settings.py`, "Database"). Pooler-aware tuning is backlog, not this
+  sprint.

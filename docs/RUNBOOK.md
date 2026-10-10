@@ -287,7 +287,7 @@ Generate a secret key with:
 .\.venv\Scripts\python.exe .\odds\manage.py check                              # expect: no issues
 .\.venv\Scripts\python.exe .\odds\manage.py makemigrations --check --dry-run   # expect: No changes detected
 .\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 654 tests, 1 skipped, all passing
-.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper.tests_deployment_v1 --noinput  # the 15 deployment tests
+.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper.tests_deployment_v1 --noinput  # the 19 deployment tests
 
 # The deployment configuration check. A deployed process never sets DEBUG, and it
 # does set the six transport values, so the check runs with them too.

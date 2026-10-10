@@ -734,3 +734,72 @@ authoritative instant, and nothing schedules any of it: the review-time checks
 `tests_contentcheck_v1.py` pins are not a replacement for the reader's runtime
 answer. A controlled publication workflow remains future work, recorded beside the
 storage and publication gaps in `docs/DEPLOYMENT.md` section 10.
+
+## 11. Deployment-readiness documentation audit (2026-10-09)
+
+Sprint 1I re-read the deployment documents against the code, the container
+configuration and the contracts they describe, and corrected the drifts it could
+verify. It is a documentation sprint: no application code, setting, dependency,
+migration, content manifest, Dockerfile, `fly.toml`, test or endpoint changed, and
+nothing was built, migrated, served or deployed.
+
+| Item | Value |
+| --- | --- |
+| Branch | `main` at `77a6ffcb21668545da2f0c4aefd00a109a4d5a81`, which is also `origin/main`, with a clean working tree at the start |
+| Scope | `docs/DEPLOYMENT.md` sections 1, 6 and 10, this record, and `docs/RUNBOOK.md` section 7; `docs/API_V1_CONTRACT.md` was re-read and left unchanged |
+| Deployment performed | **no** - nothing was built, installed, migrated, served or deployed |
+| External actions | none: no network call, no `docker`, no `fly`, no migration, no `refresh_tips`, no publish, no commit |
+| Suite | 654 tests, 1 skipped (`manage.py test alltips_scraper --noinput`); unchanged, so `docs/RUNBOOK.md` section 7 still states it |
+| `manage.py check` | no issues |
+| `manage.py makemigrations --check --dry-run` | no changes detected |
+| `git diff --check` | clean |
+
+### 11.1 The drifts the audit corrected
+
+* **The versioned route was described as write-gated** (`docs/DEPLOYMENT.md`
+  section 6): it answered "from the stored snapshot" and returned `503` "until a
+  snapshot has been written". The deployed reader is not a table — `jsoncontent_v1`
+  serves the published content the image ships. The legacy database-backed writer is
+  not the installed v1 publication mechanism, and `manage.py refresh_tips` is
+  refused against this reader (exit status `3`). `503` `source_unavailable` is the
+  answer for a type key the shipped manifest does not name, and the tracked manifest
+  is still the empty map, so the correction keeps the status code and fixes the
+  mechanism.
+* **A merged duplicate** (`docs/DEPLOYMENT.md` section 1): two consecutive bullets
+  both said "no scheduler, no Celery" and each carried half of the same fact. They
+  are one bullet now, keeping both halves — the endpoint is served from published
+  content, and the writer is refused here.
+* **Connection options that no longer exist** (`docs/DEPLOYMENT.md` section 10): the
+  bullet stated `CONN_MAX_AGE = 0` and "disabling server-side cursors and prepared
+  statements" as this image's settings. There is no such setting: `CONN_MAX_AGE`,
+  `DISABLE_SERVER_SIDE_CURSORS` and `OPTIONS['prepare_threshold']` were the pooled
+  PostgreSQL path and went with it, as `odds/odds/settings.py` records under
+  "Database". The corrected bullet says what applies — one SQLite connection per
+  request, Django's own default — and keeps the backlog note.
+* **One gap the audit added** (`docs/DEPLOYMENT.md` section 10): the image excludes
+  `odds/db.sqlite3`, and no volume or managed database shares state between
+  machines. The configured release-command migration runs on a one-off machine's
+  ephemeral filesystem, so any SQLite schema or data it creates is not available to
+  a separate serving machine. The health and published-content read paths do not
+  need a database, but `/admin/` and session- or auth-dependent paths are not
+  deployment-ready without an explicit persistence decision. This is configuration
+  review, not a completed container or Fly verification.
+
+### 11.2 What was checked and deliberately left alone
+
+* **The counts still hold.** The suite was re-run from the repository-root `.venv`
+  and reported the same 654 tests and 1 skipped that `docs/RUNBOOK.md` section 7 and
+  section 10 of this document record, so no count was edited anywhere.
+* **One stale count was observed and deliberately left alone.** `docs/RUNBOOK.md`
+  section 7 labels the deployment-contract module "the 15 deployment tests", and that
+  module holds 19 tests now: `manage.py test alltips_scraper.tests_deployment_v1`
+  reported `Ran 19 tests`, `OK`. The full-suite statement this sprint was scoped to
+  check matches, so the label is reported here rather than edited; sections 7 and 8
+  of this document record 15 because that is what the module held then.
+* **This record is the only addition to this document**, appended after section 10
+  rather than folded into it: sections 8, 9 and 10 record what those sprints did and
+  are left as they were.
+* **Nothing else was audited away.** The deferred items in `docs/DEPLOYMENT.md`
+  section 10 — no volume, no managed database, no `CSRF_TRUSTED_ORIGINS`,
+  forward-only migrations, the template `fly.toml`, the unmade image — are
+  unchanged.
