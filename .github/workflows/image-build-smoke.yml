@@ -1,0 +1,205 @@
+# ---------------------------------------------------------------------------
+# Image build and local smoke check (TEST ONLY - never a deployment).
+#
+# Builds the production image from the commit under test and exercises the
+# approved static-v1 local HTTP surface against one container bound to
+# 127.0.0.1:
+#
+#   GET /api/health/                      -> 200 + pinned health body
+#   GET /api/v1/tips/?type=bet_of_the_day -> 503 + source_unavailable
+#   GET /api/v1/tips/?type=not_a_type     -> 400 + unknown_tip_type
+#   GET /api/v1/tips/                     -> 400 + missing_tip_type
+#   the shipped manifest inside the image -> pinned empty manifest
+#
+# This workflow is a test. It never logs in, never pushes, never opens a
+# registry, never calls Fly, references no secret, asks for no write
+# permission, and uploads no artifact. The six legacy scrape routes are
+# deliberately not requested (docs/DEPLOYMENT.md section 1.1).
+#
+# docs/DEPLOYMENT.md section 8 documents the same build and run commands for a
+# developer on a machine that has a Docker CLI.
+# ---------------------------------------------------------------------------
+name: Image build and local smoke check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# The only capability any step needs: read the commit under test. Every write
+# scope is deliberately absent, and so is id-token, so no cloud credential can
+# be minted by this workflow even if a step misbehaved.
+permissions:
+  contents: read
+
+jobs:
+  image-build-and-smoke:
+    name: Build the image and smoke the static-v1 surface
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # One run-unique local tag and container name per attempt. Nothing is
+      # pushed anywhere: the image exists only on this ephemeral runner.
+      IMAGE_TAG: "sure-tips-api:ci-${{ github.run_id }}-${{ github.run_attempt }}"
+      CONTAINER_NAME: "sure-tips-api-ci-${{ github.run_id }}-${{ github.run_attempt }}"
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          fetch-depth: 1
+          # The token authenticates this one fetch and is not written to
+          # .git/config, so no credential is left on the runner for the build
+          # (or for anything the build executes) to find.
+          persist-credentials: false
+
+      - name: Build the image (local tag only)
+        # Build-time network use, and the only external network use this
+        # workflow plans: Docker Hub for python:3.12-slim and PyPI for the
+        # pinned wheels. No login, no push, no registry, no cache service.
+        run: |
+          set -euo pipefail
+          docker build --tag "$IMAGE_TAG" .
+
+      - name: Start the smoke container on loopback only
+        run: |
+          set -euo pipefail
+          # Test-only runtime configuration: DEBUG is deliberately not set
+          # (settings.py defaults it to False) and no deployment transport
+          # value is set, so the container serves plain HTTP on 127.0.0.1.
+          # DEFAULT_FROM_EMAIL and SCRAPE_URL are credential-free .invalid
+          # placeholders. The secret key is generated here, for this container
+          # only, is never echoed, and is passed by name (--env SECRET_KEY) so
+          # its value is not in the argument list either.
+          export SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(64))')"
+          echo "::add-mask::$SECRET_KEY"
+          docker run \
+            --detach \
+            --name "$CONTAINER_NAME" \
+            --publish 127.0.0.1::8080 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --env SECRET_KEY \
+            --env DEFAULT_FROM_EMAIL=no-reply@example.invalid \
+            --env SCRAPE_URL=https://example.invalid \
+            "$IMAGE_TAG"
+          # The ephemeral host port Docker chose on 127.0.0.1.
+          PORT="$(docker port "$CONTAINER_NAME" 8080/tcp | head -n 1 | sed 's/.*://')"
+          echo "SMOKE_PORT=$PORT" >> "$GITHUB_ENV"
+          echo "the smoke container is listening on 127.0.0.1:${PORT}"
+
+      - name: Wait for the container to answer /api/health/ (bounded)
+        run: |
+          set -euo pipefail
+          url="http://127.0.0.1:${SMOKE_PORT}/api/health/"
+          for attempt in $(seq 1 60); do
+            if python3 -c 'import sys, urllib.request; sys.exit(0 if urllib.request.urlopen(sys.argv[1], timeout=5).status == 200 else 1)' "$url" 2>/dev/null; then
+              echo "ready after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          # Surface the last connection error before failing, so the reason is
+          # in this step's log as well as in the container log below.
+          python3 -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5)' "$url" || true
+          echo "::error::the container did not answer ${url} within 120 s"
+          exit 1
+
+      - name: Assert the approved smoke surface
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          BASE = 'http://127.0.0.1:%s' % os.environ['SMOKE_PORT']
+
+          def fetch(path):
+              try:
+                  with urllib.request.urlopen(BASE + path, timeout=15) as response:
+                      return response.status, response.headers.get_content_type(), response.read()
+              except urllib.error.HTTPError as error:
+                  return error.code, error.headers.get_content_type(), error.read()
+
+          def check(path, status, body, top_level_keys):
+              got_status, content_type, raw = fetch(path)
+              assert got_status == status, (path, 'status', got_status, raw[:200])
+              assert content_type == 'application/json', (path, 'content-type', content_type)
+              assert raw.decode('utf-8') == body, (path, 'body', raw)
+              assert set(json.loads(raw)) == top_level_keys, (path, 'keys', raw)
+
+          # Liveness: 200 and the pinned body, exactly (69 bytes).
+          check(
+              '/api/health/', 200,
+              '{"status": "ok", "service": "sure-tips-api", "api_version": "legacy"}',
+              {'status', 'service', 'api_version'},
+          )
+          # A supported type key that the shipped (empty) manifest does not name.
+          check(
+              '/api/v1/tips/?type=bet_of_the_day', 503,
+              '{"api_version": "v1", "error": {"code": "source_unavailable", '
+              '"message": "tip data is temporarily unavailable", "field": null}}',
+              {'api_version', 'error'},
+          )
+          # A type key outside the v1 registry.
+          check(
+              '/api/v1/tips/?type=not_a_type', 400,
+              '{"api_version": "v1", "error": {"code": "unknown_tip_type", '
+              '"message": "the type query parameter is not a supported tip type", '
+              '"field": "type"}}',
+              {'api_version', 'error'},
+          )
+          # The type parameter is required.
+          check(
+              '/api/v1/tips/', 400,
+              '{"api_version": "v1", "error": {"code": "missing_tip_type", '
+              '"message": "the type query parameter is required", "field": "type"}}',
+              {'api_version', 'error'},
+          )
+
+          # No legacy scrape route (/api/bet-of-the-day/, ...) is requested here.
+          print('smoke assertions passed')
+          PY
+
+      - name: Assert the manifest shipped in the image
+        # A second, unnamed container from the same image. It runs no
+        # application process, has no network, is read-only, and --rm removes it.
+        run: |
+          set -euo pipefail
+          observed="$(docker run \
+            --rm \
+            --network none \
+            --read-only \
+            --entrypoint sh \
+            "$IMAGE_TAG" \
+            -c 'f=/app/odds/alltips_scraper/content/v1/manifest.json; wc -c < "$f"; sha256sum "$f" | cut -d " " -f 1; cat "$f"; printf "\n"')"
+          expected="$(printf '38\n%s\n%s\n' \
+            'ec7e91f60d5ee0ef73754ea87adf2686bf251781e39308788bc5f361773e3b63' \
+            '{"schema_version": 1, "snapshots": {}}')"
+          if [ "$observed" != "$expected" ]; then
+            echo '::error::the manifest inside the image is not the pinned empty manifest'
+            printf 'observed:\n%s\n' "$observed"
+            printf 'expected:\n%s\n' "$expected"
+            exit 1
+          fi
+          echo 'the image ships the pinned empty manifest (38 bytes, sha256 ec7e91f6...)'
+
+      - name: Container diagnostics (failure only, this container only)
+        if: failure()
+        run: |
+          set -uo pipefail
+          echo '--- containers for this run only ---'
+          docker ps --all --filter "name=${CONTAINER_NAME}" \
+            --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          echo '--- logs for this container only ---'
+          docker logs --tail 200 "$CONTAINER_NAME" 2>&1 || true
+
+      - name: Remove this run's container and image
+        if: always()
+        run: |
+          set -uo pipefail
+          docker rm --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
+          docker image rm --force "$IMAGE_TAG" >/dev/null 2>&1 || true
