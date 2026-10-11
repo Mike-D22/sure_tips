@@ -353,6 +353,41 @@ and the smoke gate only — so run the commands above for the tests. It is not a
 substitute for the deployment verification in section 11 and `docs/DEPLOYMENT.md`
 §6, and one green run does not by itself make a commit production-ready.
 
+### 7.2 CI gate: "Django regression tests"
+
+`.github/workflows/django-tests.yml` — **"Django regression tests"** — runs the
+verification commands above on a GitHub-hosted runner, against the pinned
+dependencies in `odds/requirements.txt`. It runs on pushes to `main`, on pull
+requests targeting `main`, and on manual workflow dispatch.
+
+**Require a green "Django regression tests" result on a `main` commit, together
+with a green "Image build and local smoke check" result (section 7.1), before
+treating that commit as eligible for the next deployment step (section 11).**
+
+A green result means:
+
+* the job selected Python 3.12;
+* the pinned dependencies were installed into a disposable virtualenv created in
+  the runner's temporary directory: no developer `.venv`, and nothing that
+  outlives the job;
+* `python manage.py check` passed;
+* `python manage.py test alltips_scraper -v 2 --noinput` passed.
+
+It is a **test-only Django regression gate**: it says that suite passed on that
+commit and nothing more. The workflow deploys nothing — it does not deploy to Fly,
+does not build or publish a container image, does not log into an image registry,
+reads no repository, organization, environment or cloud secret, and uses no write
+permission. It is **not** a replacement for the image build and local smoke gate in
+section 7.1, and it is **not** a replacement for the deployment verification in
+section 11 and `docs/DEPLOYMENT.md` §6.
+
+First recorded evidence: workflow run #1 completed successfully on `main` at commit
+`dff5339` ("Add Django regression test workflow") on 2026-10-11, with an observed
+duration of 22 seconds. A single green run is evidence that the run succeeded, not
+proof of indefinite reliability: it does not show that the workflow is reliable for
+every future change, that every dependency is secure, that the service is
+production-ready, or that a Fly deployment succeeded.
+
 ## 8. Logging
 
 Logging is console-only (`LOGGING` in `odds/odds/settings.py`). Modules log with
@@ -457,10 +492,12 @@ What a deployment relies on, and what it deliberately does not do:
 * `odds/alltips_scraper/tests_deployment_v1.py` pins all of the above, so a
   change to the Dockerfile, `.dockerignore`, `fly.toml` or the pinned
   dependencies has to be deliberate.
-* A `main` commit is eligible for the next deployment step only after the
+* A `main` commit is eligible for the next deployment step only after **both**
+  the **"Django regression tests"** workflow
+  (`.github/workflows/django-tests.yml`, section 7.2) and the
   **"Image build and local smoke check"** workflow
-  (`.github/workflows/image-build-smoke.yml`) is green on it — the gate recorded
-  in section 7.1.
+  (`.github/workflows/image-build-smoke.yml`, section 7.1) are green on it — the
+  two gates recorded in sections 7.1 and 7.2. Green gates deploy nothing.
 
 ### 11.1 Initial static-v1 deployment scope (2026-10-10, sprint 1K)
 

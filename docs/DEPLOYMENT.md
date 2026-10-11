@@ -269,6 +269,20 @@ not show that the workflow is reliable for every future change, that every
 dependency is secure, that the service is production-ready, or that a Fly
 deployment succeeded.
 
+### 8.2 Django regression tests in CI (2026-10-11, sprint 1M)
+
+The Django suite is covered by the separate `.github/workflows/django-tests.yml`
+workflow, named **"Django regression tests"**: it runs `manage.py check` and the
+`alltips_scraper` suite on a GitHub-hosted runner against the pinned
+dependencies, and `docs/RUNBOOK.md` section 7.2 records it. Like the workflow in
+§8.1 it is a test-only gate that deploys nothing.
+
+Both gates must be green on a `main` commit — the Django regression tests and
+the image build / local smoke check — before treating that commit as eligible for
+the next deployment step. A green gate is a successful CI test or image result,
+not deployment verification (§6): it does not show that a real production or Fly
+deployment succeeded. Neither gate deploys anything.
+
 ## 9. Operating the service
 
 ```powershell
