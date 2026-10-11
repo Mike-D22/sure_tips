@@ -1,0 +1,119 @@
+# ---------------------------------------------------------------------------
+# Django regression tests (TEST ONLY - never a deployment).
+#
+# Runs the two verification commands docs/RUNBOOK.md section 7 documents for
+# the Django service, against a throwaway virtual environment built from the
+# pinned requirements, on a GitHub-hosted Linux runner:
+#
+#   python manage.py check
+#   python manage.py test alltips_scraper -v 2 --noinput
+#
+# A green run is a regression gate for the Django service. It is not a
+# production deployment and not a deployment verification: nothing here
+# deploys, publishes, logs in, or holds a credential.
+#
+# Image build and smoke coverage lives in the separate workflow
+# .github/workflows/image-build-smoke.yml, which this file does not change.
+#
+# The suite is intended to be offline: tests.py replaces every scraper handler
+# with a failing double, and the parser, reader, refresh, startup and validator
+# suites disable the socket layer through OfflineGuardMixin, so no test
+# initiates a network request.
+# ---------------------------------------------------------------------------
+name: Django regression tests
+
+# Exactly three triggers: a push to main, a pull request that targets main, and
+# a manual dispatch. No pull_request_target and no workflow_run - neither grants
+# a fork any base-repository context to borrow.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# The only capability any step needs: read the commit under test. Every write
+# scope is deliberately absent, and so is id-token, so no cloud credential can
+# be minted by this workflow even if a step misbehaved.
+permissions:
+  contents: read
+
+jobs:
+  django-tests:
+    name: Django checks and the alltips_scraper suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        # manage.py lives in odds/, and the suite resolves the shipped
+        # Dockerfile, .dockerignore, fly.toml and content directory from its own
+        # module path, so this directory only has to put manage.py and
+        # requirements.txt where the commands below name them.
+        working-directory: odds
+    env:
+      # Cosmetic and non-secret: keeps the verbose test log in order when the
+      # runner captures stdout and stderr.
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Check out the commit under test
+        # The same pin the image-build smoke workflow uses, so the two gates
+        # cannot disagree about the action they run.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          # One commit is enough: no test reads git history - every test reads
+          # the shipped files from disk, relative to its own module path.
+          fetch-depth: 1
+          # The token authenticates this one fetch and is not written to
+          # .git/config, so no credential is left on the runner for anything
+          # the tests execute to find.
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        # The interpreter line is part of this project's contract rather than a
+        # property of the runner image: the image builds FROM python:3.12-slim,
+        # Django 6.0.5 declares Requires-Python >=3.12, and docs/RUNBOOK.md
+        # section 1 records CPython 3.12 as the interpreter every local
+        # verification command used - while runs-on: ubuntu-latest is a moving
+        # image. The action is pinned to a full commit SHA naming the release
+        # beside it. No dependency-caching input is configured.
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install the pinned requirements into a throwaway virtualenv
+        # The virtualenv is created under the runner's temporary directory,
+        # which a GitHub-hosted runner discards when the job ends: it is not a
+        # shared or persistent path, and nothing here survives into another
+        # run. Build-time network access is GitHub (the pinned actions and the
+        # commit under test) and the Python package index, for the versions
+        # odds/requirements.txt pins - the same install the image build does.
+        # pip is not upgraded, and no lock or hash step is added.
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --requirement requirements.txt
+
+      - name: Run the Django checks and the regression suite
+        # The three names settings.py requires with no default are exported in
+        # this step's own process environment, and in that of no other step -
+        # no environment file is read and none is created. SECRET_KEY is
+        # generated per run, added to the runner's masking, never echoed, never
+        # written to a file and never carried into a later step, so it dies
+        # with the runner.
+        # DEFAULT_FROM_EMAIL and SCRAPE_URL are the credential-free .invalid
+        # placeholders the image smoke workflow already uses: no mail is sent
+        # (Django's test runner installs the in-memory email backend) and no
+        # host resolves. tests_deployment_v1.py supplies its own probe values
+        # to the subprocesses it starts.
+        #
+        # check first, then the suite, and fail fast. No step here touches the
+        # database schema, regenerates a snapshot, starts a server, or requests
+        # an HTTP endpoint.
+        run: |
+          set -euo pipefail
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
+          echo "::add-mask::$SECRET_KEY"
+          export DEFAULT_FROM_EMAIL="no-reply@example.invalid"
+          export SCRAPE_URL="https://example.invalid"
+          "$RUNNER_TEMP/venv/bin/python" manage.py check
+          "$RUNNER_TEMP/venv/bin/python" manage.py test alltips_scraper -v 2 --noinput
