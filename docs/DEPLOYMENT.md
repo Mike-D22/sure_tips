@@ -234,6 +234,41 @@ docker run --rm --entrypoint sh sure-tips-api:local -c "cd /app/odds && gunicorn
 development server. Nothing else has to be passed: the container uses the same
 SQLite file, so there is no database endpoint to point it at.
 
+### 8.1 Automated image build and smoke check (2026-10-10, sprint 1L)
+
+The repository now has a GitHub Actions workflow at
+`.github/workflows/image-build-smoke.yml`, named
+**"Image build and local smoke check"**. It is a test-only build-and-smoke job: it
+builds the image from the commit under test on a GitHub-hosted runner and exercises
+the approved local HTTP surface. It never deploys.
+
+It runs on pushes to `main`, on pull requests targeting `main`, and on manual
+workflow dispatch.
+
+What it does, and what it deliberately does not do:
+
+* builds the Docker image **locally on a GitHub-hosted runner**;
+* runs a **single container bound to loopback only**, under a run-unique tag and
+  container name, and removes those run-scoped Docker resources afterwards;
+* checks `GET /api/health/`;
+* checks only the approved static-v1 error-path contracts of `GET /api/v1/tips/`
+  for the empty shipped manifest (§1.1) — a supported type key answers `503`
+  `source_unavailable` — and requests no legacy scrape route;
+* verifies the shipped manifest's pinned integrity values inside the image;
+* does **not** deploy to Fly;
+* does **not** publish an image or log into an image registry;
+* uses **no repository, organization, environment or cloud secrets**;
+* does **not** run the Django test suite: it is the image build plus its narrow
+  local smoke gate, nothing more;
+* is **not** a replacement for production deployment verification (§6).
+
+First recorded evidence: workflow run #1 completed successfully on `main` at
+commit `7f71870` ("Add Docker image smoke workflow") on 2026-10-10, with an
+observed duration of 28 seconds. A single green run is a first data point: it does
+not show that the workflow is reliable for every future change, that every
+dependency is secure, that the service is production-ready, or that a Fly
+deployment succeeded.
+
 ## 9. Operating the service
 
 ```powershell
@@ -257,11 +292,12 @@ manifest does not name.
 
 ## 10. Known gaps and deferrals
 
-* **The image has never been built here.** `docker` was not installed in the
-  sprint environment, so `docker build`, `docker run` and the local liveness curl
-  were not executed; `fly.toml`, the Dockerfile and the pins are covered by
-  `manage.py check`, `check --deploy` and `tests_deployment_v1.py` instead. Add a
-  build-and-smoke-test job before the first production deploy.
+* **The image build is run in CI, not from this checkout.** `docker` was not
+  installed in the sprint environment, so `docker build`, `docker run` and the
+  local liveness curl in §8 were not executed here. Since sprint 1L the Dockerfile
+  is built and smoke-checked by the workflow in §8.1, whose first recorded build
+  and smoke run is workflow run #1; `fly.toml`, the Dockerfile and the pins stay
+  covered by `manage.py check`, `check --deploy` and `tests_deployment_v1.py`.
 * **No static files.** No WhiteNoise, no `collectstatic`: `/admin/` would load
   unstyled in this image. Serving the admin's assets is a separate, deliberate
   change.

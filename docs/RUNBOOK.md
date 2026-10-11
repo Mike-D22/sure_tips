@@ -333,6 +333,26 @@ One of them,
 `LegacyCacheContractTests.test_cache_keys_are_namespaced_per_view`, is
 time-of-day sensitive: see section 4.3 of `docs/AUDIT.md`.
 
+### 7.1 CI gate: "Image build and local smoke check"
+
+`.github/workflows/image-build-smoke.yml` — **"Image build and local smoke
+check"** — builds the production image from the commit under test on a
+GitHub-hosted runner and runs the narrow local smoke gate described in
+`docs/DEPLOYMENT.md` §8.1. It runs on pushes to `main`, on pull requests targeting
+`main`, and on manual workflow dispatch.
+
+**Require a green "Image build and local smoke check" result on a `main` commit
+before treating that commit as eligible for the next deployment step (section 11).**
+Green means the image built and its narrow local smoke gate passed — it does not
+mean the workflow deployed anything.
+
+The workflow deploys nothing: it does not deploy to Fly, does not publish an image
+or log into an image registry, and reads no repository, organization, environment
+or cloud secret. It also does not run the Django test suite — it is the image build
+and the smoke gate only — so run the commands above for the tests. It is not a
+substitute for the deployment verification in section 11 and `docs/DEPLOYMENT.md`
+§6, and one green run does not by itself make a commit production-ready.
+
 ## 8. Logging
 
 Logging is console-only (`LOGGING` in `odds/odds/settings.py`). Modules log with
@@ -437,6 +457,10 @@ What a deployment relies on, and what it deliberately does not do:
 * `odds/alltips_scraper/tests_deployment_v1.py` pins all of the above, so a
   change to the Dockerfile, `.dockerignore`, `fly.toml` or the pinned
   dependencies has to be deliberate.
+* A `main` commit is eligible for the next deployment step only after the
+  **"Image build and local smoke check"** workflow
+  (`.github/workflows/image-build-smoke.yml`) is green on it — the gate recorded
+  in section 7.1.
 
 ### 11.1 Initial static-v1 deployment scope (2026-10-10, sprint 1K)
 
