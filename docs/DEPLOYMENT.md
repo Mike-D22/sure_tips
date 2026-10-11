@@ -197,6 +197,34 @@ still the empty map (`{"schema_version": 1, "snapshots": {}}`):
 curl.exe "https://<app>.fly.dev/api/v1/tips/?type=bet_of_the_day"
 ```
 
+### 6.1 Manual release verification matrix (2026-10-11, sprint 1N)
+
+These are the only approved post-deploy checks, and they are read-only. The
+checklist, the preconditions, the abort conditions and the release record live in
+`docs/RUNBOOK.md` section 11.2.
+
+| Read-only check | Expected result | Pinned by |
+| --- | --- | --- |
+| `fly status` | machine running, new release version, `[[http_service.checks]]` green | this section, `fly.toml` |
+| `fly logs` | console logging only; nothing sensitive echoed | this section, `docs/RUNBOOK.md` section 8 |
+| `GET https://<app>.fly.dev/api/health/` | `200`, JSON body exactly `{"status": "ok", "service": "sure-tips-api", "api_version": "legacy"}` | section 6, `odds/alltips_scraper/views.py`, `docs/RUNBOOK.md` section 3, `.github/workflows/image-build-smoke.yml` |
+| `GET https://<app>.fly.dev/api/v1/tips/?type=bet_of_the_day` | `503`, `{"api_version": "v1", "error": {"code": "source_unavailable", "message": "tip data is temporarily unavailable", "field": null}}` — expected, because the shipped manifest is the empty map | section 6, `docs/API_V1_CONTRACT.md` sections 5 and 6, `.github/workflows/image-build-smoke.yml` |
+| optional, same route: `?type=not_a_type` | `400` `unknown_tip_type`, `field` `"type"` | `docs/API_V1_CONTRACT.md` section 5, `.github/workflows/image-build-smoke.yml` |
+| optional, same route: no `type` parameter | `400` `missing_tip_type`, `field` `"type"` | `docs/API_V1_CONTRACT.md` section 5, `.github/workflows/image-build-smoke.yml` |
+
+`GET /api/health/` plus the versioned read path are the whole static-v1 public
+surface (`docs/RUNBOOK.md` section 11.1). Do not call the six legacy routes in
+section 4 — frozen and routable, outside the static-v1 guarantee, and able to do
+synchronous upstream work inside a request; do not touch `/admin/` while no
+persistence architecture is chosen (section 10); and do not issue a write method,
+`manage.py refresh_tips`, `manage.py migrate`, or any environment or secret dump.
+
+A release moves through three states and is verified only at the last one:
+*accepted* (`fly deploy` exited 0 and `fly status` shows a new release version),
+*healthy* (the `/api/health/` checks pass and the health request answers as pinned
+above), and *verified* (healthy, plus every approved check above). An accepted
+deploy, and a single green CI run, are each not a verified release.
+
 ## 7. Rollback
 
 ```powershell
@@ -205,7 +233,9 @@ fly deploy --image registry.fly.io/<app>:<previous-version>
 ```
 
 A rollback does not undo migrations. Check `fly releases` and the logs before
-assuming the previous version still matches the database schema.
+assuming the previous version still matches the database schema. The abort
+conditions, the stop rules and the release record for a manual release attempt are
+in `docs/RUNBOOK.md` section 11.2.
 
 ## 8. Building and running the image locally
 
