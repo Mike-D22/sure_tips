@@ -14,12 +14,12 @@ Backend repository for the **OddMate** sports-tips product (app label
 > SQLite file in every environment — there is no `DATABASE_URL` and no PostgreSQL
 > dependency. Transport security is
 > environment-driven: a deployment states the six transport values in `fly.toml`
-> `[env]`, and unset local defaults keep plain HTTP working. `fly.toml` is a
-> template — `app`, `primary_region` and the `<app>.fly.dev` host are placeholders
-> until the app is created. **Nothing has been deployed:** the procedure, the
-> secrets, and the open gaps are in
-> [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md), and the sprint record is in
-> [`docs/AUDIT.md`](docs/AUDIT.md) section 7.
+> `[env]`, and unset local defaults keep plain HTTP working. `fly.toml` carries
+> the selected identity — app `sure-tips-api-mate`, region `iad`, host
+> `sure-tips-api-mate.fly.dev` — committed in sprint 1O-1P, while **no Fly app has
+> been created and nothing has been deployed:** the procedure, the secrets, and
+> the open gaps are in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md), and the sprint
+> records are in [`docs/AUDIT.md`](docs/AUDIT.md) sections 7 and 13.
 
 > **Published content (batch B, 2026-10-04):** the versioned endpoint is served from
 > reviewed canonical JSON that ships inside the image
@@ -63,9 +63,10 @@ Backend repository for the **OddMate** sports-tips product (app label
 - `docs/` — product decisions, data contract, audit trail, runbook, and the
   deployment procedure.
 - `Dockerfile`, `.dockerignore`, `fly.toml` — container image and Fly.io
-  configuration for the service (sprint 1E-A1). `fly.toml` is a template: its app
-  name, region and host are placeholders that are filled in when the Fly app is
-  created. See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+  configuration for the service (sprint 1E-A1). `fly.toml` commits the selected
+  identity: app `sure-tips-api-mate`, region `iad` and the host
+  `sure-tips-api-mate.fly.dev`, none of which exists on Fly yet. See
+  [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 - `.venv/` — (git-ignored) local virtual environment at the repository root.
 
 ## Documentation

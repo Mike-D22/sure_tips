@@ -22,7 +22,10 @@ So this module pins the deployment contract from two ends:
 2. **The shipped configuration.** ``Dockerfile``, ``.dockerignore``,
    ``fly.toml`` and ``odds/.env.example`` are read from disk - ``fly.toml``
    through ``tomllib`` - so the assertions describe the configuration the
-   platform would receive rather than a copy of its text.
+   platform would receive rather than a copy of its text. The two tracked CI
+   workflows and the four documents that state the Fly identity are read from
+   disk the same way, so the identity a reader is told cannot drift from the one
+   ``fly.toml`` commits.
 
 Ground rules
 ------------
@@ -32,9 +35,12 @@ Ground rules
   module.
 * **No secret, ever.** The only credential-shaped values here are obvious
   non-credentials (``probe_user``, ``not-a-real-password``, ``db.invalid``).
-* **No deployment, no identity.** ``fly.toml`` is a template: it carries
-  placeholders, not an app name, a region or a machine size, and these tests
-  require it to stay that way until an app is actually created.
+* **An identity is selected; no resource and no deployment exist.** Sprint
+  1O-1P replaced the placeholder identity with one committed name, region and
+  host, and these tests pin those exact values together with the documents that
+  state them. None of that is a claim about Fly: no app has been created, no
+  secret is set, nothing has been deployed and no production check has run, so
+  no test here may assert an app, a release, a secret or a live response.
 * **``/api/health/`` is the liveness contract.** Sprint 1E-A1 adds no
   ``/healthz``: ``fly.toml`` checks the legacy endpoint, and that route is pinned
   here instead.
@@ -69,6 +75,18 @@ DOCKERFILE = REPO_ROOT / 'Dockerfile'
 DOCKERIGNORE = REPO_ROOT / '.dockerignore'
 FLY_CONFIG = REPO_ROOT / 'fly.toml'
 ENV_EXAMPLE = ODDS_DIR / '.env.example'
+
+# The tracked documents that state the Fly identity, plus the workflow directory:
+# read from disk the same way as the shipped files above, so the identity a reader
+# is told cannot drift from the one ``fly.toml`` commits.
+README = REPO_ROOT / 'README.md'
+DEPLOYMENT_DOC = REPO_ROOT / 'docs' / 'DEPLOYMENT.md'
+RUNBOOK_DOC = REPO_ROOT / 'docs' / 'RUNBOOK.md'
+AUDIT_DOC = REPO_ROOT / 'docs' / 'AUDIT.md'
+FLY_IDENTITY_FILES = (
+    FLY_CONFIG, README, DEPLOYMENT_DOC, RUNBOOK_DOC, AUDIT_DOC,
+)
+WORKFLOW_DIR = REPO_ROOT / '.github' / 'workflows'
 
 # The canonical content the versioned endpoint is served from, and the one
 # instruction that copies the service directory holding it into the image. The
@@ -129,6 +147,37 @@ FLY_TRANSPORT_POLICY = {
 
 LOCAL_ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]']
 RELEASE_COMMAND = 'python manage.py migrate --noinput'
+
+# The Fly identity selected in sprint 1O-1P, and the spellings it removed. These
+# pin what the tracked files say - never that a Fly resource exists: no
+# ``fly apps create``, no secret, no deploy and no production observation has
+# happened, and no test may assert one.
+FLY_APP = 'sure-tips-api-mate'
+FLY_REGION = 'iad'
+FLY_HOST = FLY_APP + '.fly.dev'
+FLY_ALLOWED_HOSTS = ','.join([FLY_HOST] + LOCAL_ALLOWED_HOSTS)
+FLY_CREATE_COMMAND = 'fly apps create ' + FLY_APP
+
+# The identity spellings this deployment used while its identity was still
+# unresolved. A current-state file that still carries one is still describing a
+# decided identity as an open question. ``<previous-version>`` is deliberately
+# not here: it is a genuine metavariable of the documented rollback command.
+RETIRED_FLY_IDENTITY_PLACEHOLDERS = (
+    '<staging-or-production-app-name>',
+    '<fly-region>',
+    '<app>',
+    '<app-name>',
+)
+
+# Each identity file has to keep saying, in its own words, that nothing exists
+# yet. Any single phrase is enough: the files differ in wording, not in fact.
+NO_FLY_RESOURCE_STATEMENTS = (
+    'has not been created',
+    'has never been run',
+    'no fly app',
+    'nothing has been deployed',
+)
+
 FLY_FORBIDDEN_TOKENS = ('refresh_tips', 'collectstatic', 'loaddata', 'runserver')
 IMAGE_FORBIDDEN_TOKENS = (
     'runserver', 'migrate', 'refresh_tips', 'collectstatic',
@@ -504,9 +553,7 @@ class BuildContextTests(SimpleTestCase):
 
 
 class FlyConfigurationTests(SimpleTestCase):
-    """fly.toml is a template: no identity, no secret, no sizing policy."""
-
-    PLACEHOLDER = r'^<[a-z0-9-]+>$'
+    """fly.toml carries the selected identity: no secret, no sizing policy."""
 
     @classmethod
     def setUpClass(cls):
@@ -514,13 +561,14 @@ class FlyConfigurationTests(SimpleTestCase):
         cls.text = FLY_CONFIG.read_text(encoding='utf-8')
         cls.config = tomllib.loads(cls.text)
 
-    def test_fly_template_has_no_identity_and_one_release_action(self):
-        # The app name and the region are chosen when the app is actually
-        # created, so the committed values are literal placeholders: naming a
-        # real one here would be a guessed identity for a service that is not
-        # deployed.
-        self.assertRegex(self.config['app'], self.PLACEHOLDER)
-        self.assertRegex(self.config['primary_region'], self.PLACEHOLDER)
+    def test_fly_identity_is_selected_and_one_release_action_remains(self):
+        # The identity is chosen and committed (sprint 1O-1P), so the values are
+        # pinned exactly rather than checked for placeholder shape: an app name
+        # is not a free variable, and the host has to be this app's own host.
+        # Nothing here claims a Fly resource exists - see
+        # FlyIdentityDocumentationTests for that half of the contract.
+        self.assertEqual(self.config['app'], FLY_APP)
+        self.assertEqual(self.config['primary_region'], FLY_REGION)
         # No machine size either - no [[vm]], no size/memory key anywhere.
         self.assertNotIn('vm', self.config)
         self.assertNotIn('shared-cpu', self.text)
@@ -556,7 +604,15 @@ class FlyConfigurationTests(SimpleTestCase):
         self.assertFalse(env['SCRAPE_URL'].endswith('/'))
         hosts = env['ALLOWED_HOSTS']
         self.assertNotIn('*', hosts)
-        self.assertIn('<', hosts, 'the real <app>.fly.dev host is not chosen yet')
+        self.assertEqual(hosts, FLY_ALLOWED_HOSTS)
+        self.assertEqual(
+            hosts.split(','), [FLY_HOST] + LOCAL_ALLOWED_HOSTS,
+            'this app\'s own host comes first and every local host stays, after it',
+        )
+        self.assertEqual(
+            FLY_HOST, self.config['app'] + '.fly.dev',
+            'the app name and its own Fly host are one decision, not two',
+        )
         for name, expected in FLY_TRANSPORT_POLICY.items():
             with self.subTest(setting=name):
                 self.assertEqual(env[name], expected)
@@ -592,3 +648,121 @@ class EnvExampleTests(SimpleTestCase):
         # appear in the Database comment, but never as a KEY=value pair.
         self.assertNotIn('DATABASE_URL', self.values)
         self.assertNotIn('postgres://', self.text)
+
+
+class FlyIdentityDocumentationTests(SimpleTestCase):
+    """The selected identity is stated the same way in every tracked file.
+
+    Sprint 1O-1P replaced the placeholder identity with one committed name,
+    region and host, so the documents that describe the deployment have to match
+    ``fly.toml`` instead of merely agreeing that nothing is chosen yet. What none
+    of them may claim is a resource: the app is still uncreated, undeployed and
+    unverified, and every identity file has to keep saying so.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.texts = {
+            path: path.read_text(encoding='utf-8')
+            for path in FLY_IDENTITY_FILES
+        }
+
+    def test_the_scan_covers_the_config_and_the_four_documents(self):
+        # The scan scope is part of the contract: shrinking it would silently
+        # stop pinning a document, so the tuple itself is pinned.
+        self.assertEqual(
+            FLY_IDENTITY_FILES,
+            (FLY_CONFIG, README, DEPLOYMENT_DOC, RUNBOOK_DOC, AUDIT_DOC),
+        )
+
+    def test_every_identity_file_states_the_same_selected_identity(self):
+        for path, text in self.texts.items():
+            with self.subTest(file=path.name):
+                self.assertIn(FLY_APP, text)
+                self.assertIn(FLY_REGION, text)
+                self.assertIn(FLY_HOST, text)
+
+    def test_the_documented_create_command_names_the_committed_app(self):
+        # An operator following the procedure has to create this app: a generic
+        # ``fly apps create <something>`` would invite a second identity.
+        for path in (DEPLOYMENT_DOC, RUNBOOK_DOC):
+            with self.subTest(file=path.name):
+                self.assertIn(FLY_CREATE_COMMAND, self.texts[path])
+
+    def test_no_retired_identity_placeholder_survives(self):
+        for path, text in self.texts.items():
+            for retired in RETIRED_FLY_IDENTITY_PLACEHOLDERS:
+                with self.subTest(file=path.name, retired=retired):
+                    self.assertNotIn(retired, text)
+
+    def test_every_identity_file_still_says_no_fly_resource_exists(self):
+        for path, text in self.texts.items():
+            with self.subTest(file=path.name):
+                self.assertTrue(
+                    any(
+                        phrase in text.lower()
+                        for phrase in NO_FLY_RESOURCE_STATEMENTS
+                    ),
+                    f'{path.name} must still state that the app has not been '
+                    'created and nothing has been deployed',
+                )
+
+
+class WorkflowCapabilityTests(SimpleTestCase):
+    """The two CI workflows stay test-only: no deploy, no token, no write.
+
+    Sprint 1N made "green gates deploy nothing" a recorded rule. The rule is
+    only worth recording if a later edit cannot quietly grant a workflow the
+    capability to break it, so both files are read from disk and scanned for the
+    syntax that would: a Fly token or the CLI, a registry push, an id token, an
+    inherited or referenced secret, a write scope, or a trigger that hands a
+    workflow base-repository context.
+    """
+
+    EXPECTED_WORKFLOWS = ('django-tests.yml', 'image-build-smoke.yml')
+
+    # Capability *syntax*, not prose: an entry is spelled the way it would
+    # appear as a key or a value, so a comment that names a capability in order
+    # to forbid it does not fail this test.
+    FORBIDDEN_CAPABILITY_SYNTAX = (
+        'FLY_API_TOKEN',
+        'flyctl',
+        'fly deploy',
+        'fly apps create',
+        'registry.fly.io',
+        'id-token: write',
+        'contents: write',
+        'permissions: write',
+        'secrets: inherit',
+        '${{ secrets.',
+        'pull_request_target:',
+        'workflow_run:',
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.workflows = {
+            path.name: path.read_text(encoding='utf-8')
+            for path in sorted(WORKFLOW_DIR.glob('*.yml'))
+        }
+
+    def test_exactly_the_two_documented_workflows_exist(self):
+        self.assertEqual(
+            tuple(sorted(self.workflows)),
+            tuple(sorted(self.EXPECTED_WORKFLOWS)),
+        )
+
+    def test_every_workflow_reads_the_commit_and_persists_no_credential(self):
+        for name, text in self.workflows.items():
+            with self.subTest(workflow=name):
+                self.assertIn('permissions:', text)
+                self.assertIn('contents: read', text)
+                self.assertIn('persist-credentials: false', text)
+
+    def test_no_workflow_holds_a_deploy_or_credential_capability(self):
+        for name, text in self.workflows.items():
+            for capability in self.FORBIDDEN_CAPABILITY_SYNTAX:
+                with self.subTest(workflow=name, capability=capability):
+                    self.assertNotIn(capability, text)

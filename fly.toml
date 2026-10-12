@@ -1,12 +1,14 @@
 # ---------------------------------------------------------------------------
-# Fly.io configuration TEMPLATE for the OddMate tips API (sure_tips / odds).
+# Fly.io configuration for the OddMate tips API (sure_tips / odds).
 #
-# This file is a template, not an identity. It deliberately names no app, no
-# hostname, no region and no machine size: those are chosen only when the Fly
-# app is actually created (`fly apps create <name>`), which has not happened.
-# Replace every <placeholder> below - `app`, `primary_region` and the
-# ALLOWED_HOSTS host - with the real values at that point, then deploy.
-# Deploying first fails fast instead of shipping under a guessed name.
+# This file carries the selected identity: `app`, `primary_region` and this app's
+# own host are committed here, beside the non-secret runtime values. The identity
+# was chosen before any Fly resource existed - **no Fly app has been created**:
+# `fly apps create` has not been run, no secret is set and nothing is deployed.
+# Whether the account can create this name is a Fly-side fact this repository
+# cannot verify; if the name is unavailable, the app name, the region and the
+# ALLOWED_HOSTS host change together in one committed change, never by editing a
+# deployed app by hand.
 #
 # Nothing secret belongs in this file. SECRET_KEY is a Fly secret
 # (`fly secrets set ...`); only the non-secret values below live here, where
@@ -20,8 +22,8 @@
 # See docs/DEPLOYMENT.md for the full procedure.
 # ---------------------------------------------------------------------------
 
-app = "<staging-or-production-app-name>"
-primary_region = "<fly-region>"
+app = "sure-tips-api-mate"
+primary_region = "iad"
 
 [build]
   dockerfile = "Dockerfile"
@@ -31,10 +33,11 @@ primary_region = "<fly-region>"
 # setting either here would serve a debug-mode, wildcard-CORS API.
 [env]
   PORT = "8080"
-  # Must contain the real <app>.fly.dev host: a request whose Host header is not
-  # listed answers 400 DisallowedHost. The local hosts stay so the same image
-  # can be run and curled on this machine.
-  ALLOWED_HOSTS = "<staging-or-production-app-name>.fly.dev,localhost,127.0.0.1,[::1]"
+  # The first entry is this app's own Fly host; a request whose Host header is
+  # not listed answers 400 DisallowedHost. The local hosts stay after it so the
+  # same image can be run and curled on this machine. No wildcard: an open
+  # ALLOWED_HOSTS would accept every Host header.
+  ALLOWED_HOSTS = "sure-tips-api-mate.fly.dev,localhost,127.0.0.1,[::1]"
   DEFAULT_FROM_EMAIL = "no-reply@example.com"
   SCRAPE_URL = "https://www.freesupertips.com"
 
@@ -78,6 +81,5 @@ primary_region = "<fly-region>"
     method = "GET"
     path = "/api/health/"
 
-# No [[vm]] block and no machine size: both are chosen when the app is created
-# (and revisited once the real load is known), so this template commits no
-# sizing policy.
+# No [[vm]] block and no machine size: the size is a deploy-time choice (and
+# revisited once the real load is known), so this file commits no sizing policy.

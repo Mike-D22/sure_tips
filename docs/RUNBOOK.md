@@ -286,8 +286,8 @@ Generate a secret key with:
 ```powershell
 .\.venv\Scripts\python.exe .\odds\manage.py check                              # expect: no issues
 .\.venv\Scripts\python.exe .\odds\manage.py makemigrations --check --dry-run   # expect: No changes detected
-.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 654 tests, 1 skipped, all passing
-.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper.tests_deployment_v1 --noinput  # the 19 deployment tests
+.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput # expect: 662 tests, 1 skipped, all passing
+.\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper.tests_deployment_v1 --noinput  # the 27 deployment tests
 
 # The deployment configuration check. A deployed process never sets DEBUG, and it
 # does set the six transport values, so the check runs with them too.
@@ -454,14 +454,18 @@ Never log `SECRET_KEY`, SMTP credentials, or `SCRAPE_URL` values.
 
 The service is containerised and its Fly configuration is committed, but **no
 deployment was performed in sprint 1E-A1**: the image was never built in that
-environment (no Docker CLI), and no `fly` command was run. The full procedure,
-including the image-safety checks, is `docs/DEPLOYMENT.md`. The short version:
+environment (no Docker CLI), and no `fly` command was run. The configuration now
+names the app the first deployment will create — `sure-tips-api-mate` in region
+`iad`, answering as `sure-tips-api-mate.fly.dev` (sprint 1O-1P, `fly.toml`) — but
+**no Fly app has been created** from it and no `fly` command has been run against
+it. The full procedure, including the image-safety checks, is
+`docs/DEPLOYMENT.md`. The short version:
 
 ```powershell
-fly apps create <app-name>                           # then put the same name in fly.toml [app]
+fly apps create sure-tips-api-mate                    # the app fly.toml declares
 fly secrets set SECRET_KEY=<generated>                # see section 6
 fly deploy                                            # release_command: migrate only
-curl.exe https://<app-name>.fly.dev/api/health/       # the app name chosen above
+curl.exe https://sure-tips-api-mate.fly.dev/api/health/   # the committed host
 ```
 
 What a deployment relies on, and what it deliberately does not do:
@@ -484,11 +488,16 @@ What a deployment relies on, and what it deliberately does not do:
   values unset and keeps serving plain HTTP. `SECURE_PROXY_SSL_HEADER` is
   unconditional, so Django recognises the `https` scheme Fly's edge forwards in
   `X-Forwarded-Proto`.
-* `fly.toml` is a template, not an identity: `app`, `primary_region` and the
-  `<app>.fly.dev` host in `[env] ALLOWED_HOSTS` are placeholders, and no `[[vm]]`
-  block or machine size is committed. All four are chosen when the app is created
-  (`fly apps create <name>`, `fly scale`), and `fly deploy` against an unfilled
-  template fails fast rather than shipping under a guessed name.
+* `fly.toml` carries a selected identity, not a created app: `app`
+  `sure-tips-api-mate`, `primary_region` `iad` and the `sure-tips-api-mate.fly.dev`
+  host in `[env] ALLOWED_HOSTS` are committed (sprint 1O-1P), while no Fly app has
+  been created from them. The machine size stays a creation-time choice — no
+  `[[vm]]` block or size is committed — so the first deploy still starts with
+  `fly apps create sure-tips-api-mate` and `fly scale`. Because the identity is
+  committed rather than filled in at deploy time, `fly deploy` no longer fails on
+  an unfilled template: it now names one specific app, and whether that app exists
+  and whether this account owns the name are Fly-side facts this repository cannot
+  verify.
 * `odds/alltips_scraper/tests_deployment_v1.py` pins all of the above, so a
   change to the Dockerfile, `.dockerignore`, `fly.toml` or the pinned
   dependencies has to be deliberate.
@@ -581,21 +590,24 @@ condition is an abort (see the abort table).
    only — `docs/DEPLOYMENT.md` section 3.1), the `[env]` values in `fly.toml` are the
    committed ones (section 6), and neither `DEBUG` nor `CORS_ALLOW_ALL_ORIGINS` is set
    (`docs/DEPLOYMENT.md` section 3).
-7. `fly.toml` is no longer a template: `app`, `primary_region` and the `<app>.fly.dev`
-   host in `[env] ALLOWED_HOSTS` carry the real identity (`docs/DEPLOYMENT.md`
-   section 4). Filling them is a **committed** change: if they are still placeholders,
-   land them in their own commit first and then repeat preconditions 2 and 3 against
-   that commit. Never hand-edit a live `[env]` to work around this, and never fill
-   `fly.toml` on a dirty tree.
-8. The `<app>.fly.dev` host used below is the one chosen when the app was created.
-   Until the app exists, the whole procedure is blocked (see the unresolved
+7. `fly.toml` names the identity this repository declares: `app`
+   `sure-tips-api-mate`, `primary_region` `iad` and the `sure-tips-api-mate.fly.dev`
+   host in `[env] ALLOWED_HOSTS` (`docs/DEPLOYMENT.md` section 4; committed in
+   sprint 1O-1P). Confirm the committed values are the ones being released rather
+   than editing them: changing the identity is a **committed** change, so land it in
+   its own commit and then repeat preconditions 2 and 3 against that commit. Never
+   hand-edit a live `[env]` to work around this, and never edit `fly.toml` on a
+   dirty tree.
+8. The host used below is `sure-tips-api-mate.fly.dev`, the one `fly.toml` commits
+   and the one the created app has to own. No Fly app has been created for it yet,
+   so until the app exists the whole procedure is blocked (see the unresolved
    prerequisites).
 
 **The deploy attempt** — manual, in this order (`docs/DEPLOYMENT.md` sections 4
 and 5):
 
 ```powershell
-fly apps create <app-name>            # only if the app does not exist yet
+fly apps create sure-tips-api-mate      # only if the app does not exist yet
 fly secrets set SECRET_KEY=$secret    # $secret generated by docs/DEPLOYMENT.md section 3.1
 fly secrets list                      # names and digests only; values are never shown
 fly deploy                            # build, release_command migrate, roll out
@@ -624,14 +636,14 @@ with the source that pins each expectation):
 | --- | --- |
 | `fly status` | machine running, new release version, checks green |
 | `fly logs` | console logging only; nothing sensitive echoed |
-| `GET https://<app>.fly.dev/api/health/` | `200` and the pinned health body |
-| `GET https://<app>.fly.dev/api/v1/tips/?type=bet_of_the_day` | `503` `source_unavailable` — expected, the tracked manifest is the empty map |
+| `GET https://sure-tips-api-mate.fly.dev/api/health/` | `200` and the pinned health body |
+| `GET https://sure-tips-api-mate.fly.dev/api/v1/tips/?type=bet_of_the_day` | `503` `source_unavailable` — expected, the tracked manifest is the empty map |
 
 ```powershell
 fly status
 fly logs
-curl.exe https://<app>.fly.dev/api/health/
-curl.exe "https://<app>.fly.dev/api/v1/tips/?type=bet_of_the_day"
+curl.exe https://sure-tips-api-mate.fly.dev/api/health/
+curl.exe "https://sure-tips-api-mate.fly.dev/api/v1/tips/?type=bet_of_the_day"
 ```
 
 **Never request these in production:** the six legacy routes in section 4
@@ -654,14 +666,14 @@ instead of continuing.
 | Missing or red CI evidence for the candidate, or green gates on a different commit | Stop. Wait for both gates on that commit (sections 7.1 and 7.2); never re-dispatch to force green. |
 | No recorded human authorization | Stop. Obtain it before running any `fly` command. |
 | Local Fly authentication absent or unverifiable | Stop. Authenticate locally, outside this repository; never through CI or a repository secret. |
-| Required configuration unconfirmed, `DEBUG` or wildcard CORS set, or `fly.toml` still a template | Stop. Fix it as a committed change, then repeat preconditions 2 and 3. |
+| Required configuration unconfirmed, `DEBUG` or wildcard CORS set, or the committed `fly.toml` identity not the one being released | Stop. Fix it as a committed change, then repeat preconditions 2 and 3. |
 | `fly deploy` fails, or the release command exits non-zero | Investigate, do not roll back: by design the previous version keeps serving (`docs/DEPLOYMENT.md` section 5). |
 | A post-deploy check fails | Do not call the release verified. Use only the documented rollback path (`docs/DEPLOYMENT.md` section 7), then record the outcome. |
 | Any urge to repair production by hand — secret rotation, `refresh_tips`, `migrate`, content edits | Stop. All of that is outside this procedure (sections 4.2 and 11.1, `docs/DEPLOYMENT.md` section 9). |
 
 **Rollback.** `docs/DEPLOYMENT.md` section 7 is the only documented rollback:
 `fly releases` to find the previous good version, then
-`fly deploy --image registry.fly.io/<app>:<previous-version>`. Two documented facts
+`fly deploy --image registry.fly.io/sure-tips-api-mate:<previous-version>`. Two documented facts
 govern it: a rollback does not undo migrations (migrations are forward-only), and a
 release command that exits non-zero already leaves the previous version serving.
 **Not documented, therefore not assumed:** whether an earlier image is still
@@ -694,12 +706,14 @@ Release record
 **Unresolved prerequisites.** These are not established anywhere in this
 repository, so a human must confirm each one before the first real release:
 
-* The Fly app identity — `app`, `primary_region` and the production host are
-  placeholders in `fly.toml` (section 11, `docs/DEPLOYMENT.md` section 4).
-* Whether the app exists at all: `fly apps create` is documented but has never been
-  run (section 11, `docs/DEPLOYMENT.md` section 10).
-* The concrete public base URL the checks use: the repository contains only the
-  `<app>.fly.dev` placeholder.
+* The Fly app identity — `app` `sure-tips-api-mate`, `primary_region` `iad` and the
+  host `sure-tips-api-mate.fly.dev` are committed in `fly.toml` (section 11,
+  `docs/DEPLOYMENT.md` section 4), but **no Fly app has been created** for them, and
+  whether this account can own that name is a Fly-side fact no file here records.
+* Whether the app exists at all: `fly apps create sure-tips-api-mate` is documented
+  but has never been run (section 11, `docs/DEPLOYMENT.md` section 10).
+* The concrete public base URL the checks use: only the committed
+  `sure-tips-api-mate.fly.dev` host is known, and it has never been called.
 * The local Fly authentication and which person holds it (precondition 5).
 * The machine size — no `[[vm]]` block or machine size is committed (section 11).
 * Whether a previous release image is retained for a rollback (see Rollback).

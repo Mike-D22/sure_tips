@@ -28,7 +28,7 @@ those files honest.
 | --- | --- | --- |
 | `Dockerfile` | repository root | `python:3.12-slim`, gunicorn, unprivileged `appuser` (uid 10001) |
 | `.dockerignore` | repository root | keeps `odds/.env`, `odds/db.sqlite3`, venvs and bytecode out of the build context |
-| `fly.toml` | repository root | placeholder app/region, non-secret `[env]` (including the six transport values), release command, HTTPS, health check, no committed VM size |
+| `fly.toml` | repository root | the selected identity (app `sure-tips-api-mate`, region `iad`), non-secret `[env]` (including the six transport values), release command, HTTPS, health check, no committed VM size |
 | Database | `odds/odds/settings.py` | the local, git-ignored SQLite file `odds/db.sqlite3`, the same in development and in the container: no `DATABASE_URL`, no PostgreSQL, no connection options |
 | Pinned dependencies | `odds/requirements.txt` | `gunicorn` (the container's WSGI server), Django, and the scraping stack |
 | Published content | `odds/alltips_scraper/content/v1/` | the reviewed canonical JSON the versioned endpoint is served from: it ships inside the image and is never written at runtime |
@@ -105,7 +105,7 @@ executed, and no deployment occurred.
 | `SECRET_KEY` | **secret** | `fly secrets set SECRET_KEY=…` | Generate a fresh one; never reuse a development key. |
 | `DEFAULT_FROM_EMAIL` | `[env]` in `fly.toml` | committed | Not a secret. |
 | `SCRAPE_URL` | `[env]` in `fly.toml` | committed | Upstream base URL, not a credential. |
-| `ALLOWED_HOSTS` | `[env]` in `fly.toml` | committed | Must contain `<app>.fly.dev`, or every request is `400 DisallowedHost`. |
+| `ALLOWED_HOSTS` | `[env]` in `fly.toml` | committed | Must contain `sure-tips-api-mate.fly.dev`, or every request is `400 DisallowedHost`. |
 | `PORT` | `[env]` in `fly.toml` | committed | Must match `[http_service].internal_port`. |
 | `SECURE_SSL_REDIRECT` | `[env]` in `fly.toml` | committed | Sends plain-HTTP requests to HTTPS; `force_https` makes the edge do it too. |
 | `SESSION_COOKIE_SECURE` | `[env]` in `fly.toml` | committed | The session cookie travels over HTTPS only. |
@@ -142,10 +142,11 @@ fly secrets list            # names and digests only; values are never shown
 Run every command from the repository root.
 
 ```powershell
-# 1. Create the Fly app. Pick the real name now: the committed fly.toml is a
-#    template, so this name goes into [app], [primary_region] and the
-#    <app>.fly.dev entry in ALLOWED_HOSTS before the first deploy.
-fly apps create <app-name>
+# 1. Create the Fly app this repository already declares. The committed fly.toml
+#    carries the whole identity - [app] sure-tips-api-mate, [primary_region] iad
+#    and the sure-tips-api-mate.fly.dev entry in ALLOWED_HOSTS - and no Fly app
+#    has been created for it yet.
+fly apps create sure-tips-api-mate
 
 # 2. The application secret (see §3.1).
 fly secrets set SECRET_KEY=$secret
@@ -155,11 +156,13 @@ fly secrets set SECRET_KEY=$secret
 fly deploy
 ```
 
-Replace `<app-name>` with the real name, and replace the
-placeholders inside `fly.toml` (`app`, `primary_region`, `[env] ALLOWED_HOSTS`)
-before the first deploy. `fly deploy` against an unfilled template fails fast,
-which is intended: this repository does not get to guess the identity of an app it
-does not own.
+The name is not invented at the console: `app` (`sure-tips-api-mate`),
+`primary_region` (`iad`) and the `[env] ALLOWED_HOSTS` host
+(`sure-tips-api-mate.fly.dev`) are committed together in `fly.toml`, and no Fly app
+has been created for that identity yet. If this account cannot create the name,
+change all three as one committed edit before the first deploy: an app that does not
+exist yet cannot be repaired by editing a local file, and a `fly.toml` naming some
+other app deploys this service under that identity instead of this one.
 
 ## 5. What `fly deploy` does
 
@@ -183,7 +186,7 @@ requires a new migration.
 ```powershell
 fly status                 # machines, release, health
 fly logs                   # console logging (DJANGO_LOG_LEVEL / ALLTIPS_LOG_LEVEL)
-curl.exe https://<app>.fly.dev/api/health/
+curl.exe https://sure-tips-api-mate.fly.dev/api/health/
 # {"status": "ok", "service": "sure-tips-api", "api_version": "legacy"}
 ```
 
@@ -194,7 +197,7 @@ manifest names, and a type that manifest does not name answers `503`
 still the empty map (`{"schema_version": 1, "snapshots": {}}`):
 
 ```powershell
-curl.exe "https://<app>.fly.dev/api/v1/tips/?type=bet_of_the_day"
+curl.exe "https://sure-tips-api-mate.fly.dev/api/v1/tips/?type=bet_of_the_day"
 ```
 
 ### 6.1 Manual release verification matrix (2026-10-11, sprint 1N)
@@ -207,8 +210,8 @@ checklist, the preconditions, the abort conditions and the release record live i
 | --- | --- | --- |
 | `fly status` | machine running, new release version, `[[http_service.checks]]` green | this section, `fly.toml` |
 | `fly logs` | console logging only; nothing sensitive echoed | this section, `docs/RUNBOOK.md` section 8 |
-| `GET https://<app>.fly.dev/api/health/` | `200`, JSON body exactly `{"status": "ok", "service": "sure-tips-api", "api_version": "legacy"}` | section 6, `odds/alltips_scraper/views.py`, `docs/RUNBOOK.md` section 3, `.github/workflows/image-build-smoke.yml` |
-| `GET https://<app>.fly.dev/api/v1/tips/?type=bet_of_the_day` | `503`, `{"api_version": "v1", "error": {"code": "source_unavailable", "message": "tip data is temporarily unavailable", "field": null}}` — expected, because the shipped manifest is the empty map | section 6, `docs/API_V1_CONTRACT.md` sections 5 and 6, `.github/workflows/image-build-smoke.yml` |
+| `GET https://sure-tips-api-mate.fly.dev/api/health/` | `200`, JSON body exactly `{"status": "ok", "service": "sure-tips-api", "api_version": "legacy"}` | section 6, `odds/alltips_scraper/views.py`, `docs/RUNBOOK.md` section 3, `.github/workflows/image-build-smoke.yml` |
+| `GET https://sure-tips-api-mate.fly.dev/api/v1/tips/?type=bet_of_the_day` | `503`, `{"api_version": "v1", "error": {"code": "source_unavailable", "message": "tip data is temporarily unavailable", "field": null}}` — expected, because the shipped manifest is the empty map | section 6, `docs/API_V1_CONTRACT.md` sections 5 and 6, `.github/workflows/image-build-smoke.yml` |
 | optional, same route: `?type=not_a_type` | `400` `unknown_tip_type`, `field` `"type"` | `docs/API_V1_CONTRACT.md` section 5, `.github/workflows/image-build-smoke.yml` |
 | optional, same route: no `type` parameter | `400` `missing_tip_type`, `field` `"type"` | `docs/API_V1_CONTRACT.md` section 5, `.github/workflows/image-build-smoke.yml` |
 
@@ -229,7 +232,7 @@ deploy, and a single green CI run, are each not a verified release.
 
 ```powershell
 fly releases                                        # find the previous good version
-fly deploy --image registry.fly.io/<app>:<previous-version>
+fly deploy --image registry.fly.io/sure-tips-api-mate:<previous-version>
 ```
 
 A rollback does not undo migrations. Check `fly releases` and the logs before
@@ -361,11 +364,13 @@ manifest does not name.
   reviewed.
 * **Forward-only migrations.** The release command migrates; there is no
   rollback beyond a new forward migration.
-* **A template `fly.toml`.** `app` (committed as
-  `<staging-or-production-app-name>`), `primary_region` (`<fly-region>`) and the
-  `<app>.fly.dev` host in `[env] ALLOWED_HOSTS` are placeholders, and no `[[vm]]`
-  block is committed: the app's identity and machine size are decided when the app
-  is created, so the first deploy starts with `fly apps create` and a short edit.
+* **A committed identity, an uncreated app.** `fly.toml` names `app`
+  `sure-tips-api-mate`, `primary_region` `iad` and the `sure-tips-api-mate.fly.dev`
+  host in `[env] ALLOWED_HOSTS`, but **no Fly app has been created** from it: no
+  `fly apps create`, no secret and no deploy has run, so the identity is a decision
+  rather than an observation. No `[[vm]]` block is committed either — the machine
+  size stays a deploy-time choice — so the first deploy still starts with
+  `fly apps create`.
 * **No managed database.** The service runs on the git-ignored SQLite file
   `odds/db.sqlite3`, which lives in the machine's own filesystem. Nothing is
   configured to persist it across a deploy, so a row written by

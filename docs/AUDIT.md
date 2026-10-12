@@ -409,7 +409,7 @@ CLI). This section is the sprint record; `docs/DEPLOYMENT.md` is the procedure.
   descriptors. This is a security control rather than an optimisation: the
   context root holds `odds/.env` and `odds/db.sqlite3`, and the root is what
   `.gitignore` already protects from the repository side.
-* **Fly configuration.** `fly.toml`: a placeholder app name and region,
+* **Fly configuration.** *(Superseded in part — §13.)* `fly.toml`: a placeholder app name and region,
   `[build] dockerfile`, a `[env]` block holding non-secrets only
   (`ALLOWED_HOSTS`, `DEFAULT_FROM_EMAIL`, `SCRAPE_URL`, `PORT`, and the six
   transport values), `[deploy] release_command = "python manage.py migrate
@@ -480,7 +480,7 @@ CLI). This section is the sprint record; `docs/DEPLOYMENT.md` is the procedure.
   caches with their own date-scoped keys.
 * No `CSRF_TRUSTED_ORIGINS`: the API is read-only public `GET`s, so no browser
   POST surface needs it yet.
-* No filled-in Fly identity: `fly.toml` keeps placeholders for `app` and
+* No filled-in Fly identity. *(Superseded — §13.)* `fly.toml` keeps placeholders for `app` and
   `primary_region`, so the first deploy has to be preceded by `fly apps create`
   and a one-line edit. That is deliberate — an app name belongs to the account
   that owns it, not to this repository.
@@ -787,10 +787,10 @@ nothing was built, migrated, served or deployed.
 
 ### 11.2 What was checked and deliberately left alone
 
-* **The counts still hold.** The suite was re-run from the repository-root `.venv`
+* **The counts still hold.** *(Superseded in part — §13: the count changed.)* The suite was re-run from the repository-root `.venv`
   and reported the same 654 tests and 1 skipped that `docs/RUNBOOK.md` section 7 and
   section 10 of this document record, so no count was edited anywhere.
-* **One stale count was observed and corrected.** `docs/RUNBOOK.md` section 7
+* **One stale count was observed and corrected.** *(Superseded in part — §13: §7 now reads "the 27 deployment tests".)* `docs/RUNBOOK.md` section 7
   labelled the deployment-contract module with 15 tests; the module holds 19 —
   `manage.py test alltips_scraper.tests_deployment_v1` reported `Ran 19 tests`,
   `OK`. That label now reads "the 19 deployment tests": it was corrected in the same
@@ -801,7 +801,8 @@ nothing was built, migrated, served or deployed.
   are left as they were.
 * **Nothing else was audited away.** The deferred items in `docs/DEPLOYMENT.md`
   section 10 — no volume, no managed database, no `CSRF_TRUSTED_ORIGINS`,
-  forward-only migrations, the template `fly.toml`, the unmade image — are
+  forward-only migrations, the template `fly.toml` *(superseded in part — §13)*, the
+  unmade image — are
   unchanged.
 
 ## 12. Initial static-v1 deployment scope declared (2026-10-10)
@@ -865,6 +866,78 @@ migration, content artifact, manifest, test or endpoint behaviour changed.
   no volume, no managed database, no Redis, no session backend was added.
 * **No image or Fly verification is claimed.** The gaps in `docs/DEPLOYMENT.md`
   §10 remain configuration review.
-* **The stale deployment-test label is gone.** `docs/RUNBOOK.md` §7 reads "the 19
+* **The stale deployment-test label is gone.** *(Superseded in part — §13.)* `docs/RUNBOOK.md` §7 reads "the 19
   deployment tests", and the §11.2 bullet above is corrected from "left alone" to
   "corrected", so no document presents the old label as current.
+
+## 13. Fly identity selected — committed, not deployed (2026-10-11)
+
+Sprint 1O-1P replaces the placeholder Fly identity with one committed identity, so
+the first deployment starts from a decision this repository has already made instead
+of a name an operator invents at the console: `app` `sure-tips-api-mate`,
+`primary_region` `iad`, host `sure-tips-api-mate.fly.dev`. **No Fly app has been
+created** from it: no `fly apps create`, no `fly secrets set`, no image build, no
+deploy and no production request happened, so every identity value here is a
+decision, never an observation of Fly.
+
+It is one atomic change set — `fly.toml`, the deployment tests that pin the files,
+and the documents that state the identity — because landing any one of them alone
+would leave `main` describing an identity the other files still call unresolved.
+
+| Item | Value |
+| --- | --- |
+| Branch | `main`; the change set is **uncommitted**, so `HEAD` is still `8c49f44` and `origin/main` is unchanged |
+| Scope | `fly.toml` (comments only; the three value lines are byte-identical), `odds/alltips_scraper/tests_deployment_v1.py`, `README.md`, `docs/DEPLOYMENT.md`, `docs/RUNBOOK.md`, this record |
+| Deployment performed | **no** — no image was built, no container was run, no `fly` command was executed, nothing was served, no Fly resource was created, and the committed host was never requested |
+| External actions | none: no network call, no `docker`, no `fly`, no secret, no migration, no scrape, no publication, no commit and no push |
+| Identity | `app` `sure-tips-api-mate`, `primary_region` `iad`, `[env] ALLOWED_HOSTS` = `sure-tips-api-mate.fly.dev` followed by the three local hosts |
+| Retired spellings | the four angle-bracket identity placeholders this sprint removed are gone from all five files; `<previous-version>` stays, because it is a genuine metavariable of the documented rollback command |
+| Suite | `Found 662 test(s)` — `Ran 662 tests in 3.991s`, `OK (skipped=1)`; 654 before this sprint, and `docs/RUNBOOK.md` §7 states the new count |
+| Deployment-contract module | `Found 27 test(s)` — `Ran 27 tests in 1.486s`, `OK`; 19 before this sprint |
+| `manage.py check` | `System check identified no issues (0 silenced).` |
+| `manage.py makemigrations --check --dry-run` | `No changes detected` |
+| `manage.py check --deploy` | `System check identified no issues (0 silenced).` — run with `DEBUG=False`, the six transport values, and a throwaway secret key with `.invalid` email and scrape inputs; no process-scoped value was left set after the run |
+| `git diff --check` | clean |
+
+### 13.1 What the identity is, and what it is not
+
+* **One app, one region, one host, committed together.** `fly.toml` declares
+  `app = "sure-tips-api-mate"`, `primary_region = "iad"` and
+  `ALLOWED_HOSTS = "sure-tips-api-mate.fly.dev,localhost,127.0.0.1,[::1]"`. The host
+  is pinned as derived from the app name, so a name and a Fly host that could not
+  belong to the same app fail the suite instead of shipping.
+* **No wildcard host.** `ALLOWED_HOSTS` keeps its local entries so the same image can
+  be run and curled on a developer machine, and it carries no `*`.
+* **The size is the remaining decision.** No `[[vm]]` block and no size, memory or
+  CPU key is committed: the machine size is still chosen at creation and revisited
+  once real load is known.
+* **Nothing else in the file moved.** Only the comments around the identity were
+  rewritten; `app`, `primary_region`, `ALLOWED_HOSTS`, the `[env]` non-secrets, the
+  six transport values, `release_command`, `[http_service]` and the health check are
+  unchanged, so the deployment contract itself did not change.
+* **No Fly-side fact is claimed.** Whether the account can create the name, whether
+  the app already exists and whether the host resolves are all unverifiable from this
+  repository; `docs/RUNBOOK.md` §11.2 keeps them as unresolved prerequisites.
+
+### 13.2 What deliberately did not change
+
+* **No resource, no secret, no deploy.** No app was created, no secret was set, no
+  image was built, no machine was started and no request reached Fly.
+* **The deferrals stay deferred.** `docs/DEPLOYMENT.md` §10 and §1.1 still record no
+  volume, no managed database, no Redis/Upstash, no scheduler or worker, no
+  authentication, no payments, no `CSRF_TRUSTED_ORIGINS` and forward-only
+  migrations. Section 12 of this document is unchanged.
+* **The service is untouched.** No route, view, setting, middleware, template,
+  management command, migration, dependency, content artifact or manifest changed:
+  this sprint changed a name, the tests that pin it, and the prose that repeats it.
+* **Neither workflow was touched.** `.github/workflows/django-tests.yml` and
+  `.github/workflows/image-build-smoke.yml` are byte-identical and stay test-only —
+  no Fly token, no registry login, no deploy step and no write permission — which
+  `WorkflowCapabilityTests` now pins directly rather than by review.
+* **Green still deploys nothing.** A gated commit is eligible, not released, and the
+  manual procedure in `docs/RUNBOOK.md` §11.2 is unchanged in shape: precondition 7
+  now confirms a committed identity instead of filling in a template.
+* **The placeholder-era records are marked, not rewritten.** The Fly bullets in §7.1
+  and §7.3, and the §11 note that listed "the template `fly.toml`" as unchanged, now
+  carry an inline superseded marker pointing here, following the §8 precedent; the
+  sprint records themselves are left as they were.
