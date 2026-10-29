@@ -96,6 +96,11 @@ CONTENT_ROOT = APP_DIR / 'content' / 'v1'
 SHIPPED_MANIFEST = CONTENT_ROOT / 'manifest.json'
 CONTENT_COPY_INSTRUCTION = 'COPY --chown=appuser:appuser odds/ ./odds/'
 
+# The directory that copy lands in is created by the requirements copy before it,
+# so it stays root-owned until this instruction hands it to the runtime account:
+# only then can the release command create its ephemeral SQLite file there.
+SERVICE_DIR_OWNER_INSTRUCTION = 'RUN chown appuser:appuser /app/odds'
+
 # The liveness route shared by the container, fly.toml's health check and the
 # runbook; the port the image publishes; the WSGI callable its CMD names.
 HEALTH_PATH = '/api/health/'
@@ -477,6 +482,12 @@ class ImageContractTests(SimpleTestCase):
         for token in IMAGE_FORBIDDEN_TOKENS:
             with self.subTest(token=token):
                 self.assertNotIn(token, self.body)
+
+    def test_the_service_directory_is_owned_by_the_runtime_account(self):
+        # Only the entries a copy --chown names become appuser-owned; the directory
+        # the copy lands in pre-exists it, so without this instruction the release
+        # command cannot create /app/odds/db.sqlite3 and exits 1.
+        self.assertIn(SERVICE_DIR_OWNER_INSTRUCTION, self.instructions)
 
 
 class ShippedContentTests(SimpleTestCase):

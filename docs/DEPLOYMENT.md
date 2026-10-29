@@ -392,6 +392,8 @@ manifest does not name.
   release-command/admin dependency in the initial deployment scope. **Sprint 1K keeps
   this deferred** (see §1.1): the initial static-v1 scope makes no persistence
   decision, and `/admin/` and session- or auth-dependent paths stay outside it.
+  The image gives the runtime account ownership of `/app/odds`, so the release
+  command can create its ephemeral `db.sqlite3` there.
 * **No `CSRF_TRUSTED_ORIGINS`.** The API is read-only public `GET`s, so no
   browser POST surface needs it yet. A future form or dashboard on the deployed
   origin will.
