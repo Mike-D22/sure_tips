@@ -409,6 +409,8 @@ Never log `SECRET_KEY`, SMTP credentials, or `SCRAPE_URL` values.
 | `UndefinedValueError: SCRAPE_URL not found` | same — `utils.py` reads it at import time. |
 | `DisallowedHost` | add the host to `ALLOWED_HOSTS` in `odds/.env`. |
 | `400 DisallowedHost` from a deployed host | add the host to `fly.toml` `[env] ALLOWED_HOSTS` and redeploy; a deployment never reads `odds/.env`. |
+| `400 DisallowedHost` in the machine's log while `[[http_service.checks]]` is red | the check is reaching Django with the machine's private address as `Host` (it probes over the private network, not through the fly.dev name). Restore the check's `headers = { Host = … }` in `fly.toml` and redeploy — never add the machine's address to `ALLOWED_HOSTS`: Fly documents that those addresses change. |
+| health check red and every request to `/api/health/` in the log answers `301`, and the check's probe is a `301`/timeout rather than a served `200` | the access log shows `301` and there is no `GET /api/health/ 200`: the probe arrived as plain HTTP and `SECURE_SSL_REDIRECT` answered it — Fly does not follow redirects, so the check never passes. Restore `"X-Forwarded-Proto" = "https"` in the check's `headers`; do not exempt `/api/health/` from the redirect. |
 | Local requests redirect to an `https://` URL | one of the six transport values is set in `odds/.env` (usually `SECURE_SSL_REDIRECT`); unset it locally — those six describe a deployment's transport policy. |
 | `uv venv` exits non-zero: "already exists" | the repository-root `.venv` is present; use `uv venv --clear --python 3.12 .venv` to rebuild. |
 | PowerShell refuses to run `Activate.ps1` | not needed — call the interpreter directly (`.\.venv\Scripts\python.exe`); never activate a virtual environment or change the execution policy. |
@@ -625,7 +627,11 @@ and the previous version keeps serving (`docs/DEPLOYMENT.md` section 5).
    This is not verification.
 2. *Healthy*: the `[[http_service.checks]]` probe of `/api/health/` in `fly.toml`
    (interval 15s, timeout 5s, grace 10s) passes and the health request below returns
-   the expected response.
+   the expected response. The check sends this app's own `Host` and
+   `X-Forwarded-Proto: https` because it probes the machine over the app's private
+   network, not through the public name: without them the probe is answered `400`
+   and then `301`, which is a failed check. `docs/DEPLOYMENT.md` section 5 says why
+   both headers are there, and section 9 below lists the two failure shapes.
 3. *Verified*: state 2 **and** every other approved check below. A release is never
    called verified, and never recorded as verified, until all of them pass.
 

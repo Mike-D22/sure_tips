@@ -176,7 +176,19 @@ other app deploys this service under that identity instead of this one.
    Fly's TLS terminator (`force_https = true`). `auto_stop_machines = "off"` keeps
    a machine running: a cold start would otherwise add its boot time to the first
    scrape, which already runs synchronously past gunicorn's default timeout.
-4. Waits for the `[[http_service.checks]]` probe of `/api/health/`.
+4. Waits for the `[[http_service.checks]]` probe of `/api/health/` to answer
+   `200`. The probe is not a public request: Fly runs a service check against the
+   service on the machine **over the app's private network**, so the check itself
+   states the identity and the scheme —
+   `headers = { Host = "sure-tips-api-mate.fly.dev", "X-Forwarded-Proto" = "https" }`.
+   Without the first header Django sees the machine's private address as `Host`
+   and answers `400 DisallowedHost`; without the second the probe arrives as plain
+   HTTP, `SECURE_SSL_REDIRECT` answers `301`, and Fly counts anything but `2xx` as
+   a failed check (it does not follow redirects). Neither header widens
+   `ALLOWED_HOSTS` or exempts a path from the redirect — a plain-HTTP request from
+   anywhere else is still redirected and still cannot claim another host. Leave
+   both in place; `odds/alltips_scraper/tests_deployment_v1.py`
+   (`HealthCheckProbeTests`) fails if either is removed.
 
 Migrations are forward-only: a deploy that migrated and then needed to be undone
 requires a new migration.
