@@ -182,13 +182,20 @@ Every error body has the same shape: `api_version` plus an `error` object whose
   before it resolves a type) unless `storage_v1.DatabaseSnapshotProvider` is the
   installed provider. That writer is deliberately outside this request-path contract
   and no route can reach it; it is documented in `docs/RUNBOOK.md` section 4.2.
-* A content change is prepared out of band and validated before it is committed:
-  `manage.py validate_v1_content --root <candidate-directory>` re-runs the reader's
-  own compatibility checks over a candidate directory, offline and read-only, and
-  reports one line per artifact (`docs/RUNBOOK.md` section 4.3). It never runs in
-  the request path, in a deployment or in the release, it publishes and rewrites
-  nothing, and it deliberately checks no registry membership: whether the versioned
-  registry publishes a type key stays this contract's question, not the validator's.
+* A content change is prepared out of band and validated before it is committed. The
+  mechanical half of the preparation - the record file, the canonical digest and the
+  manifest entry - is written by `manage.py prepare_v1_candidate`
+  (`docs/RUNBOOK.md` section 4.4), which is offline and writes only inside the
+  directory it is handed: it publishes nothing, rewrites no shipped content and
+  changes no wire shape. The result is then validated with
+  `manage.py validate_v1_content --root <candidate-directory>`, which re-runs the
+  reader's own compatibility checks over a candidate directory, offline and
+  read-only, and reports one line per artifact (`docs/RUNBOOK.md` section 4.3).
+  Neither command runs in the request path, in a deployment or in the release, and
+  neither publishes nor rewrites anything. The preparation command does refuse a
+  type key the versioned registry does not publish (as `unknown_type`), while the
+  validator deliberately checks no registry membership: whether the registry
+  publishes a type key stays this contract's question, not the validator's.
 * `filter.timezone` is echoed but never applied, so a `200` is not evidence that a
   timezone-aware day window was honoured.
 * Deferred, and deliberately not implemented in this sprint:
@@ -205,12 +212,20 @@ The contract is covered by offline tests in
 `odds/alltips_scraper/tests_api_v1.py`, with the published-content reader covered by
 `tests_jsoncontent_v1.py` and `tests_publishedcontent_reader_v1.py`, the durable
 store, its startup install and the out-of-band writer by `tests_storage_v1.py`,
-`tests_startup_v1.py` and `tests_refresh_v1.py`, and the review-time validator by
-`tests_contentcheck_v1.py`.
+`tests_startup_v1.py` and `tests_refresh_v1.py`, the review-time validator by
+`tests_contentcheck_v1.py`, and the preparation rules and command by
+`tests_prepare_v1_candidate.py`.
 
 ```powershell
 .\.venv\Scripts\python.exe .\odds\manage.py check
 .\.venv\Scripts\python.exe .\odds\manage.py test alltips_scraper -v 2 --noinput
+
+# Prepare one record into a candidate directory: offline, and it publishes nothing
+# (exit 0 when the candidate validates, 1 for a refused change that left the
+# directory as it was found, 2 for an unusable invocation, and 3 when the run cannot
+# vouch for the directory - `candidate status=inspect` - so it must be inspected;
+# docs/RUNBOOK.md section 4.4).
+.\.venv\Scripts\python.exe .\odds\manage.py prepare_v1_candidate --payload <payload-file> --type <type-key> --fetched-at <instant> --out <candidate-directory>
 
 # Review a candidate content change before committing it: offline and read-only,
 # exit 0 for a valid candidate, 1 for a refused manifest or artifact, and 2 for an

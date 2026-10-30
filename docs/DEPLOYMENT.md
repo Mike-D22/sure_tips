@@ -373,7 +373,12 @@ manifest does not name.
   invoke it, and neither it nor anything else writes, refreshes or republishes the
   shipped content. No cache, Redis, Upstash or publication secret was added, and
   preparing a candidate, computing its digest and committing it remain manual and
-  reviewed.
+  reviewed. The mechanical half of that preparation - the record file, the canonical
+  digest and the manifest entry - is written by `manage.py prepare_v1_candidate`
+  (`docs/RUNBOOK.md` section 4.4), which is a reviewer tool for the same reasons: it
+  is not installed as a service, nothing in a build, a release or a request invokes
+  it, it reaches no network, and it publishes nothing until a reviewer commits the
+  prepared files and redeploys.
 * **Forward-only migrations.** The release command migrates; there is no
   rollback beyond a new forward migration.
 * **A committed identity, an uncreated app.** `fly.toml` names `app`

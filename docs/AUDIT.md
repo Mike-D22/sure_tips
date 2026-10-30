@@ -941,3 +941,279 @@ would leave `main` describing an identity the other files still call unresolved.
   and §7.3, and the §11 note that listed "the template `fly.toml`" as unchanged, now
   carry an inline superseded marker pointing here, following the §8 precedent; the
   sprint records themselves are left as they were.
+
+## 14. Candidate preparation tool — prepared offline, never published (2026-10-30)
+
+A resume of the candidate-preparation work: an offline, review-time command that
+writes one validated canonical v1 record, so a reviewer no longer spells the digest,
+the record file and the manifest entry by hand. The artifact rules are pure
+(`alltips_scraper/candidate_v1.py`), the filesystem work belongs to the command
+(`alltips_scraper/management/commands/prepare_v1_candidate.py`), and both are pinned
+by `alltips_scraper/tests_prepare_v1_candidate.py`. **No deployment or external
+action was performed during this sprint.**
+
+| Item | Value |
+| --- | --- |
+| Branch | `main` at `2608440d30cd3239531549fbadc8341b363bdf60` ("Repair the Fly health check Host and X-Forwarded-Proto headers"), two commits ahead of `origin/main` (`23cdd80`, "Select Fly deployment identity"); the recovery found the three sprint files untracked and no tracked file modified |
+| Scope | `alltips_scraper/candidate_v1.py`, `alltips_scraper/management/commands/prepare_v1_candidate.py`, `alltips_scraper/tests_prepare_v1_candidate.py`, `docs/RUNBOOK.md` §4.4, `docs/DEPLOYMENT.md` §10, `docs/API_V1_CONTRACT.md` §6 and §7, `alltips_scraper/content/v1/README.md`, and this section |
+| Interpreter | CPython 3.12.13 in `odds/.venv` (`odds\.venv\Scripts\python.exe -V` → `Python 3.12.13`) |
+| Deployment performed | **no** — nothing was built, installed, migrated, served or deployed |
+| External actions | none: no network call, no scraping, no `fly` command, no login, no secret read or change, no migration run, no publication, no commit or push |
+| Suite | `Found 702 test(s)` — `Ran 702 tests in 8.245s`, `OK (skipped=1)`; this includes the 31 tests of the new module. A first verbose attempt was interrupted by the terminal harness before it reported and produced no result, so the recorded figure is the completion of the run that followed it |
+| Targeted evidence of the repair | recorded before this resume, in `tmp/prepare_tests.txt` and `tmp/prepare_tests2.txt`: `Ran 31 tests in 0.766s` and `Ran 31 tests in 0.978s`, both `FAILED (failures=6)`. After this resume's corrections: `Ran 31 tests in 1.308s`, `FAILED (failures=1)`; then `Ran 31 tests in 1.143s`, `FAILED (failures=1)` at a further assertion. That last assertion was corrected and is covered by the passing full-suite run below; no third targeted run was made |
+| `manage.py check` | `System check identified no issues (0 silenced).` |
+| `manage.py makemigrations --check --dry-run` | `No changes detected` |
+| Synthetic round-trip | `prepare_v1_candidate --type bet_of_the_day --fetched-at 2026-10-30T12:00:00+00:00 --out tmp/resume_rt/c` → `manifest status=ok entries=1`, `type=bet_of_the_day status=ok`, exit `0`; the produced `manifest.json` (274 bytes) then validated independently with `validate_v1_content --root tmp/resume_rt/c` → the same two lines, exit `0` |
+| `git diff --check` | clean |
+| Shipped manifest | `odds/alltips_scraper/content/v1/manifest.json` unmodified: 38 bytes, `{"schema_version": 1, "snapshots": {}}`, sha256 `ec7e91f60d5ee0ef73754ea87adf2686bf251781e39308788bc5f361773e3b63` |
+
+### 14.1 What the tool is
+
+* **Preparation is not publication.** One run writes two files into `--out` and
+  nothing else: `<type_key>.json` holding the payload in the canonical byte form its
+  own digest is taken over plus one newline, and `manifest.json` holding every entry
+  the directory already named plus the new one. It commits nothing, deploys nothing,
+  refreshes nothing and serves nothing.
+* **Four options, all required, no defaults**: `--payload`, `--type`, `--fetched-at`
+  and `--out`. A missing option, a path of the wrong kind, or an `--out` that is the
+  packaged content root, a descendant or an ancestor of it is refused with exit
+  status `2`, before anything is written.
+* **Exit status** `0` when the candidate is in place and validates, `1` when the run
+  was refused and this run left final output unchanged after any recovery it needed
+  completed successfully, `2` when the invocation cannot be served, `3` when the run
+  cannot vouch for the directory - output may have changed or a recovery could not be
+  confirmed, so inspection is required and no rollback is promised - and `0` for help.
+  Only `1` claims an unchanged directory and only `0` a valid one (see §15).
+* **The report is the validator's**, printed verbatim for the directory as it stands
+  after the run: the manifest line, then one `type=<token> status=ok` line per entry
+  in sorted order. A refusal prints one fixed line - `candidate status=refused
+  reason=<token>` or `type=<token> status=refused reason=<token>` - and every type key
+  reaching a line passes through `reporting_v1.safe_token`. A run that cannot vouch for
+  the directory ends with `candidate status=inspect reason=<token>` instead (§15).
+* **An existing entry is never replaced.** A byte-identical rerun is a no-op: both
+  files keep their bytes and their modification times. A different entry for the same
+  key is `entry_conflict`, a different payload under an existing record name is
+  `file_conflict`, and a replacement stays a reviewed edit to the manifest.
+* **Stage, prove, then finalise.** A staging directory inside `--out` receives the
+  record and the merged manifest, the records the manifest already names are copied in
+  beside them, and the staged directory is validated twice - with
+  `validate_content_root` and with the reader's own `JsonSnapshotProvider` - before
+  the record and then the manifest are moved into place with one `os.replace` each. A
+  manifest that cannot be replaced takes the record that run added back out, and a
+  directory the run created is removed, so a refusal leaves the directory as it was
+  found - when that recovery completes. A record that cannot be taken back, staging
+  that cannot be removed, or a created directory that cannot be removed is reported as
+  `status=inspect` with exit `3` instead (§15). A staging directory an earlier run left
+  behind is never deleted by a later one - a run removes only what it created - so it
+  stays where it is: with no manifest beside it, its contents make the directory
+  unusable (`out_not_empty`), and beside a valid manifest the validator ignores it, so
+  it may remain there ignored and undiagnosed until a reviewer removes it. Only staging
+  this run created and could not remove is the reported case.
+* **Limits.** Atomicity is per file rather than transactional over the directory, two
+  runs are not coordinated with each other (the review is the serialisation), and the
+  command writes only inside the directory it is handed.
+
+### 14.2 What this sprint repaired
+
+* **One implementation defect.** Finalisation replaced the manifest unconditionally,
+  so a rerun that planned identical bytes still rewrote `manifest.json` and moved its
+  modification time, contradicting the no-op rerun the module documents. Finalisation
+  now compares the planned manifest bytes with the file's and skips the replace when
+  they already match (`_manifest_replace_needed`), which is what the rerun test and
+  the round-trip observe.
+* **Six defects in the module's own tests**, none of which changed a product rule: an
+  assertion that required a plan's manifest to equal the empty manifest and to contain
+  its entry at the same time; three key-order assertions made against the whole
+  document, where the top-level `schema_version` precedes the entry's; an AST helper
+  that recorded nothing for `from ... import candidate_v1`; a mock that identified the
+  manifest by an unresolved path string and so never refused it; two expectations that
+  compared `sorted(...)` with an unsorted literal; and a report expectation that
+  omitted the entry a second run carries over.
+* **One test rewritten to stay meaningful.** The failed-replacement test now adds a
+  second type key, so the manifest genuinely has to be replaced before it can fail: a
+  rerun that plans identical bytes no longer attempts a replace at all, and the test's
+  subject - the record a run added being taken back - is exercised as written.
+
+### 14.3 What deliberately did not change
+
+* **No wire shape, route, view, setting, dependency or migration.** `fly.toml`, the
+  Dockerfile, both workflows, the six legacy routes and the versioned endpoint are
+  untouched: the API contract gained documentation, not behaviour.
+* **The packaged content is byte-identical**, including the tracked empty
+  `manifest.json`; no payload was added, and the preparation command refuses the
+  packaged root, anything inside it and any ancestor of it.
+* **Nothing runs it.** The release command, gunicorn, the health check, the image build
+  and both workflows never invoke the preparation command or the validator.
+* **No scheduler, no automation, no commit.** Publication is still a reviewed commit
+  plus a redeploy; this sprint added the tool that prepares a record and the documents
+  that describe it.
+
+### 14.4 Open gap this leaves
+
+Publication remains manual: preparing a candidate writes files into a directory the
+reviewer names, and nothing schedules, queues, promotes or verifies a prepared record
+afterwards. Two preparations are not coordinated with each other, the directory's
+atomicity is per file, and whether the deployed reader serves a type key is still
+decided by the manifest a reviewer commits - not by this command, which only refuses
+what the reader could not load.
+
+## 15. Candidate preparation: a run that cannot vouch for `--out` says so (2026-10-30)
+
+A follow-up repair to §14. The command answered every directory-side refusal with
+`candidate status=refused` and exit `1`, a pair the documents read as "`--out` was left
+as it was found". That claim was not always true. Finalisation installs the record and
+then the manifest, and takes the record back out when the manifest cannot be replaced;
+the reclamation, the removal of a staging directory and the removal of a directory the
+run created are each a filesystem operation that can fail in turn. When one did, the run
+still printed the refusal line and exited `1`, though `--out` might now hold a record
+its manifest does not name, or a leftover directory this run knows about. A directory
+that stopped validating after installation had the same problem from the other side:
+the files were installed, so calling the run refused denied the change it had made.
+
+Both outcomes now answer `candidate status=inspect reason=<token>` with exit `3`, and
+that status word - not the token - carries the meaning: the directory has to be looked
+at before it is reused. **No deployment or external action was performed during this
+repair.**
+
+| Item | Value |
+| --- | --- |
+| Branch | `main` at `2608440d30cd3239531549fbadc8341b363bdf60` ("Repair the Fly health check Host and X-Forwarded-Proto headers"); the repair is uncommitted working-tree state on top of the untracked §14 files - no commit, no push |
+| Scope | `alltips_scraper/management/commands/prepare_v1_candidate.py`, `alltips_scraper/tests_prepare_v1_candidate.py`, `docs/RUNBOOK.md` §4.4, `docs/API_V1_CONTRACT.md` §7 (comment), §14.1 above and this section |
+| Interpreter | CPython 3.12.13 in `odds/.venv` (`odds\.venv\Scripts\python.exe`) |
+| Deployment performed | **no** — nothing was built, installed, migrated, served or deployed |
+| External actions | none: no network call, no scraping, no `fly` command, no login, no secret read or change, no migration run, no publication, no commit or push |
+| Suite | `Found 712 test(s)` — `Ran 712 tests in 8.440s`, `OK (skipped=3)`; the three skips are the three link tests - the two new prepare-command tests and the existing `tests_contentcheck_v1.py` link test - all skipped because this account cannot create a link. As the later run printed them: `symbolic links need a privilege this account lacks` twice and `this platform does not let a test create a link` once. Neither is the operating system's error, and this log recorded none, so the `WinError 1314` attribution once made here is withdrawn. The runner's exit code was not read for this run, and no `0` is assigned to it (§15.3) |
+| Targeted | `Ran 41 tests in 1.654s`, `OK (skipped=2)` — the module's ten new tests included, both skips the same symlink privilege. Re-run after the documentation edits: `Ran 41 tests in 1.404s`, `OK (skipped=2)`. Both are runner summaries; no process exit code was read for either |
+| `manage.py check` | `System check identified no issues (0 silenced).` |
+| `git diff --check` | clean |
+| Shipped manifest | `odds/alltips_scraper/content/v1/manifest.json` unmodified: 38 bytes, `{"schema_version": 1, "snapshots": {}}`, sha256 `ec7e91f60d5ee0ef73754ea87adf2686bf251781e39308788bc5f361773e3b63` |
+
+### 15.1 What changed
+
+* **A third answer, and only for a directory.** `OPERATIONAL_RETURNCODE = 3` and
+  `INSPECT_LINE = 'candidate status=inspect reason={reason}'`, printed with
+  `INSPECT_MESSAGE`. The refusal vocabularies are unchanged: the tokens still say what
+  stopped the run, and no new token was invented for "something else went wrong".
+* **Cleanup decides the outcome, after it has run.** `_finalise` now returns
+  `(refusal, inspection_required)`: a record that could not be taken back out - because
+  it could not be unlinked, or because this run installed it and the unlink failed -
+  asks for inspection, while a record this run never installed does not.
+  `_stage_and_finalise` returns the same pair and sets it when the staging directory it
+  created is still there afterwards, or when the output directory it created could not
+  be removed. A run whose write phase failed before any rename stays a plain refusal.
+* **Finalisation is settled from the directory, not from the plan.**
+  `_report_and_finish` prints the validator's report for `--out` and answers a directory
+  that no longer validates with `candidate_unusable` on the inspect line, exit `3`; an
+  otherwise good report still answers `write_failed` on the inspect line when this run's
+  cleanup did not finish. `_refusal` chooses the inspect answer before either refusal
+  form, so one incomplete recovery cannot be reported as a state of one artifact.
+* **Ten tests, covering each new guarantee and each way it can fail.** Unrelated files are
+  preserved; a record name colliding with a file and with a directory is refused; a
+  record name resolving outside `--out` is refused; the shipped root is refused through
+  a `..` alias and through a symlink; a staged candidate that does not validate leaves
+  no trace; an unreclaimable record, an unremovable staging directory and an unremovable
+  created directory each answer `status=inspect` with exit `3`; a directory that stops
+  validating after installation reports the validator's findings and then the inspect
+  line; and the vocabularies stay complete and disjoint. Eight of the ten ran on this
+  account: the two link tests skipped before asserting anything, so neither the
+  record-name link refusal nor the shipped-root-through-a-link refusal is verified
+  here.
+
+### 15.2 What deliberately did not change
+
+* **Exit `1` still means an unchanged directory, and is still the ordinary answer.** The
+  existing refusal tests are untouched and still pass: a conflict, a bad rerun, an
+  unusable `--out` and a failed write that was fully reclaimed all answer `status=refused`
+  with exit `1`.
+* **Idempotence is unchanged.** `_manifest_replace_needed` still decides whether the
+  manifest is written at all, so a byte-identical rerun writes nothing and moves no
+  modification time - and a run that replaced nothing has nothing to reclaim.
+* **The HTTP API is untouched, and the management command gained one answer and one
+  line.** No view, URL, serializer, response shape or status code changed, and the
+  shipped content tree is byte-identical. The command's four options, and the rule that
+  none has a default, are unchanged, as are the reader, validator, writer and packaging
+  modules. What changed is the management-command interface: `0`, `1` and `2` keep the
+  meanings §14.1 gave them, exit `3` is new, and a run that cannot vouch for `--out` now
+  ends with `candidate status=inspect reason=<token>`. No new reason token was invented
+  for it: the inspect line carries one of the two existing directory tokens -
+  `candidate_unusable` when the directory no longer validates after installation, and
+  `write_failed` when the installation stands but this run's cleanup did not finish - so
+  `INVOCATION_REFUSALS` and `DIRECTORY_REFUSALS` are exactly as they were. Only private
+  helper signatures inside the command changed, and `_report_and_finish` gained a
+  defaulted argument so its call sites read as before.
+* **Nothing runs it and nothing publishes.** The release command, gunicorn, the health
+  check, the image build and both workflows still never invoke the preparation command.
+
+### 15.3 The final full-suite run, and the exit code it returned (2026-10-30)
+
+The suite figures in §15 are runner summaries: the process exit code behind them was
+never read, and this section assigns none of them a retroactive `0`. The run below was
+started to supply exactly that measurement. It is recorded as it came out, and it is
+**not green**.
+
+| Item | Value |
+| --- | --- |
+| Interpreter | `odds\.venv\Scripts\python.exe`, with the working directory `d:\Dev\projects\sure_tips` — lower-case drive letter, which is what the failure below turns on |
+| Command | `odds\manage.py test alltips_scraper -v 2 --noinput` — no option added; the only database created and destroyed is the runner's own in-memory test database |
+| Start / end (UTC) | `2026-10-30T19:56:11.238Z` / `2026-10-30T19:56:27.651Z`; 16.414 s wall |
+| Native exit code | **`1`** — read from the child process object after it exited and both redirected streams were closed, not inferred from the terminal or the harness |
+| Runner summary | `Found 712 test(s)` — `Ran 712 tests in 9.461s`, `FAILED (failures=1, skipped=3)`; `System check identified no issues (0 silenced).` |
+| Failure | `tests_startup_v1.AppConfigSelectionTests.test_the_config_loads_from_the_bare_app_entry` (`tests_startup_v1.py:232`): `'d:\Dev\projects\sure_tips\odds\alltips_scraper' != 'D:\Dev\projects\sure_tips\odds\alltips_scraper'` — one directory, two spellings |
+| Skips | the same three link tests, with the words this run printed: `symbolic links need a privilege this account lacks` twice, `this platform does not let a test create a link` once |
+| Sprint sources | unchanged across the run — `candidate_v1.py` `db53c945…9c92f9`, `prepare_v1_candidate.py` `db089e05…b3eca1`, `tests_prepare_v1_candidate.py` `0d2cd772…a7d960`, before and after |
+| Packaged content | unchanged — `manifest.json` 38 bytes `ec7e91f6…773e3b63`, `README.md` 7131 bytes `43de1c5f…bfdd75` |
+| `git diff --check` | clean before this section, and re-run clean after it |
+| Evidence | `tmp/sprint_a_native_exitcode_20261030_run2/`: `python_stdout.txt`, `python_stderr.txt`, `process_metadata.json` (written only after the process exited), `source_hashes_pre/post.txt`, `content_inventory_pre/post.txt`, and the runner script. The sibling `tmp/sprint_a_native_exitcode_20261030/` records a first attempt that stopped in its own launcher before Python started; it produced no suite result and is kept as it failed |
+
+**What the one failure is, and what it is not.** The assertion is
+`self.assertEqual(config.path, str(APPS_PATH.parent))`, and both sides name the same
+directory. `APPS_PATH` is resolved with `Path.resolve()`, which on Windows reports the
+drive letter in upper case; `AppConfig.path` carries the `sys.path` entry the interpreter
+built from the process's working directory, and that string keeps whatever case the
+caller passed. This run was started with a lower-cased `d:` in its working-directory
+argument, so the two spellings diverged and the assertion failed. The earlier passing
+runs in this document were started from a shell whose prompt reads
+`D:\Dev\projects\sure_tips`.
+
+That makes the failure an artefact of how this measurement was taken rather than a
+change in behaviour: it touches no sprint file, `tests_startup_v1.py` is untouched by the
+sprint, and the whole suite is otherwise `ok`. It is also a real fragility in an older
+test — the assertion compares two spellings of one path instead of the two paths, so it
+depends on the case of the caller's working directory. Neither repair is made here.
+
+**What this leaves open.** No second run was authorised after this result, so this
+document does not claim a green suite behind the hardening. The verified record remains
+the earlier `Ran 712 tests in 8.440s`, `OK (skipped=3)`, whose exit code was not captured;
+the `1` above belongs to a run whose single failure is environmental. Closing the gap
+takes one re-run from a `D:`-spelled working directory, which this record does not
+perform and which nothing changed in this sprint is evidence for.
+
+**The controlled re-run, and what the spelling explains (2026-10-30, same day).**
+One further run was authorised to test the explanation above. It ran the same single
+command with nothing else changed, except that every path handed to the process carried an
+upper-case drive letter: the interpreter
+`D:\Dev\projects\sure_tips\odds\.venv\Scripts\python.exe`, the script argument
+`D:\Dev\projects\sure_tips\odds\manage.py`, and the working directory
+`D:\Dev\projects\sure_tips`. Both carriers that the failing run had spelled with a
+lower-case `d:` were therefore upper case here.
+
+| Item | Value |
+| --- | --- |
+| Native exit code | **`0`** — read from the child process object after it exited with both redirected streams drained, the same way as above |
+| Runner summary | `Found 712 test(s)` — `Ran 712 tests in 11.075s`, `OK (skipped=3)`; `System check identified no issues (0 silenced).` |
+| Previously failing test | `tests_startup_v1.AppConfigSelectionTests.test_the_config_loads_from_the_bare_app_entry` — `ok` |
+| Start / end (UTC) | `2026-10-30T20:16:42.707Z` / `2026-10-30T20:17:02.542Z`; 19.836 s wall |
+| Skips | the same three link-capability skips, in the same words: `symbolic links need a privilege this account lacks` twice, `this platform does not let a test create a link` once |
+| Sources and content | the three hashes above, unchanged before and after; packaged inventory unchanged — `manifest.json` 38 bytes `ec7e91f6…773e3b63`, `README.md` 7131 bytes `43de1c5f…bfdd75` |
+| Evidence | `tmp/sprint_a_uppercase_d_rerun_20261030/`: `runner_started.txt`, `launcher_note.txt`, `python_started.json`, `python_stdout.txt`, `python_stderr.txt`, `process_metadata.json`, `source_hashes_pre/post.txt`, `content_inventory_pre/post.txt`, and that run's runner script |
+
+The gap described above is closed by measurement rather than argument: with the drive
+letter upper case on the paths the process is given, the assertion passes and the suite
+is green. That supports the explanation - the failure tracked the spelling supplied to
+the process, not any behaviour under test - with one limit worth stating: the working
+directory and the script argument were both upper case here and both lower case there, so
+this run does not say which of the two carried the spelling into `config.path`. The older
+test is spelling-sensitive and stays that way; it was not modified, and this section does
+not call it fixed. The three skips are link-capability skips and say nothing about either
+symlink behaviour: neither the record-name link refusal nor the refusal of the shipped
+root reached through a link is verified on this account.

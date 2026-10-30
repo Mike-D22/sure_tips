@@ -216,6 +216,110 @@ reviewer runs before committing it:
   before the exit status is decided, so a reviewer sees the whole list of what has
   to be fixed.
 
+### 4.4 Preparing a candidate content change (`manage.py prepare_v1_candidate`)
+
+Section 4.3 validates a candidate that already exists. The preparation command writes
+one, so the reviewer no longer spells the mechanical parts - the canonical digest, the
+record file and the manifest entry - by hand:
+
+```powershell
+.\.venv\Scripts\python.exe .\odds\manage.py prepare_v1_candidate `
+  --payload <payload-file> --type <type-key> `
+  --fetched-at <instant> --out <candidate-directory>
+```
+
+* **Preparation is not publication.** A run writes two files into `--out` and nothing
+  else: `<type-key>.json`, holding the payload in the canonical byte form its own
+  digest is taken over plus one newline, and `manifest.json`, holding every entry the
+  directory already named plus the new one. It does not commit, deploy, refresh or
+  serve anything. The packaged content under `odds/alltips_scraper/content/v1/`,
+  including its tracked empty manifest, is unchanged unless a reviewer commits the
+  prepared files deliberately.
+* **All four options are required and none has a default**: `--payload FILE`,
+  `--type TYPE_KEY`, `--fetched-at INSTANT` and `--out DIRECTORY`. A run missing one
+  of them is refused rather than defaulted, so a mistyped invocation can never be
+  mistaken for a preparation of records an operator did not name.
+* **The type key must be a published registry key.** A key the versioned registry
+  does not publish is refused as `unknown_type` before a file name is built from it,
+  and the name it does build - the key plus `.json` - is then checked against the
+  reader's own rule for a record file, so an arbitrary string can never become a
+  path.
+* **The instant must carry an offset.** It is stored exactly as supplied and read as
+  UTC; a naive or unparseable text is refused as `fetched_at` rather than assumed to
+  be UTC.
+* **An existing entry is never replaced.** A byte-identical rerun is a no-op: both
+  files keep their bytes and their modification times, and the validator's report is
+  still printed. The same type key with a different entry - even one that differs
+  only in the instant - is refused as `entry_conflict`, and a different payload under
+  an existing record name as `file_conflict`. A replacement is a reviewed edit to the
+  manifest, never a side effect of a preparation run.
+* **The output directory is judged before anything is written.** An absent directory
+  is created when its parent exists; a directory holding files but no manifest is
+  refused as `out_not_empty`; a manifest that does not validate has its report
+  printed before the refusal. The packaged content root, anything inside it and any
+  ancestor of it are refused as `shipped_root` or `out_contains_shipped`.
+* **Staging, then finalisation.** A staging directory (`.prepare-v1-candidate-…`) is
+  created inside `--out`, the record and the merged manifest are written there, the
+  records the manifest already names are copied in beside them, and the whole staged
+  directory is validated twice: with `validate_content_root` and with the reader's own
+  `JsonSnapshotProvider`. Only then is the record moved into place, and the manifest
+  after it, with one `os.replace` each. If the manifest cannot be replaced, the record
+  that run added is removed again, and a directory the run created is removed too, so
+  a refusal leaves the directory as it was found - *when that recovery completes*. A
+  record that cannot be taken back, a staging directory that cannot be removed, or a
+  directory the run created and cannot remove is answered with `status=inspect` and
+  exit `3` instead, because the directory may then hold a file its manifest does not
+  name, or a leftover the run knows of. A staging directory an earlier run left behind
+  is never deleted by a later one: this command removes only what it created itself, so
+  the leftover stays where it is. With no manifest beside it, its contents make the
+  directory unusable and the next run refuses it as `out_not_empty`; beside a valid
+  manifest the validator ignores it, so it can stay there - ignored, and undiagnosed -
+  until a reviewer removes it. Only a staging directory this run created and could not
+  remove is the reported case, and that is exit `3`.
+* **The report is the validator's**, printed verbatim for the directory as it stands
+  after the run - the manifest line, then one `type=<token> status=ok` line per entry
+  in sorted order. A refused run prints one line instead,
+  `candidate status=refused reason=<token>` or
+  `type=<token> status=refused reason=<token>`. A run that cannot vouch for the
+  directory ends with `candidate status=inspect reason=<token>` instead of a refusal
+  line - after the validator's report when that report is what settled the run, or as
+  that one line alone when the run stopped during finalisation and could not undo its
+  own installation. Every token is fixed and every type key is sanitised by
+  `reporting_v1.safe_token`, so no line carries a path, a file name, a digest, a
+  payload value, an instant or an exception.
+* **The exit status** is `0` when the candidate is in place and validates; `1` when the
+  run was refused and this run left final output unchanged after any recovery it needed
+  completed successfully; `2` when the invocation cannot be served - an option is
+  missing, a path is not the kind of path it has to be, or `--out` is the packaged
+  content directory, one of its descendants or one of its ancestors; and `3` when the
+  run cannot vouch for `--out`: an installation, a reclamation or a cleanup step did
+  not finish, or the directory does not validate after installation, so the output may
+  have changed or a recovery could not be confirmed. `3` therefore requires the
+  reviewer to inspect what is there before reusing it, and it promises no rollback:
+  the command reports what it cannot vouch for rather than restoring it. Only `1`
+  claims an unchanged directory and only `0` a valid one. Help exits `0`, as every
+  Django command's help does.
+* **After exit `3`, inspect before anything else.** Print the state with
+  `manage.py validate_v1_content --root <the same directory>` (section 4.3), which
+  reads the directory and changes nothing, then compare the record files present with
+  the file names the manifest's entries give: a record the manifest does not name is
+  ignored by the validator and left alone by every later run, so it is the reviewer who
+  removes it or commits the entry that names it. A `.prepare-v1-candidate-…`
+  directory left inside `--out` is removed by the reviewer too, never by a run. Rerun
+  only once the directory is a state you can explain - a rerun is not a way to clean
+  one up.
+* **Limits.** Atomicity is per file, not a transaction over the directory: a process
+  killed between the two replaces leaves a record file beside the old manifest, which
+  the reader ignores and a rerun of the same command reuses byte for byte before
+  replacing the manifest. Two runs are not coordinated with each other either - the
+  command is a review-time tool and the review is the serialisation - and a run writes
+  only inside the directory it was handed.
+* **Nothing in a deployment runs it.** The release command, gunicorn, the health
+  check, the image build and both workflows never invoke it: it is a
+  developer/reviewer tool, offline, that reads no configuration and touches no
+  database, cache or network. A prepared candidate is committed and deployed by the
+  reviewed path in section 11, not by this command.
+
 ## 5. Caching semantics
 
 This section covers the legacy routes in section 4 only: the versioned route
