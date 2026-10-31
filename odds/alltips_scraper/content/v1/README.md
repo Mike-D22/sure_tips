@@ -46,6 +46,34 @@ The manifest carries **no** value the provider may quote into a log line: every
 refusal is reported through `alltips_scraper.jsoncontent_v1` as a fixed template
 line holding the type key and a reason token and nothing else.
 
+## Preparing a candidate record (`manage.py prepare_v1_candidate`)
+
+Steps 1-3 below are mechanical, and the offline command performs them without a
+hand-written digest or manifest entry:
+
+```powershell
+.\.venv\Scripts\python.exe .\odds\manage.py prepare_v1_candidate `
+  --payload <payload-file> --type <type-key> `
+  --fetched-at <instant> --out <candidate-directory>
+```
+
+* **Preparation is not publication.** The run writes `<type-key>.json` and
+  `manifest.json` into the candidate directory it was handed and nothing else. This
+  directory's tracked `manifest.json` stays the empty manifest, and no file here is
+  created, rewritten or refreshed by a preparation run.
+* The type key must be a published registry key (`unknown_type` otherwise), the
+  instant must carry an offset (`fetched_at` otherwise, and it is stored exactly as
+  supplied), and an entry the candidate's manifest already names is never replaced: a
+  byte-identical rerun writes nothing, a different entry for the same key is
+  `entry_conflict`, and a different payload under an existing record name is
+  `file_conflict`.
+* The packaged content root, anything inside it and any ancestor of it are refused, so
+  a candidate cannot be prepared in place of the shipped content by accident.
+* The report is the validator's own, with exit `0`; a refused change prints one fixed
+  refusal line and exits `1`; an invocation that cannot be served exits `2` without
+  writing anything. Review the candidate with `manage.py validate_v1_content` before
+  committing it - `docs/RUNBOOK.md` §4.4 states the whole workflow.
+
 ## How to publish a record (manual, reviewed change)
 
 1. Write the payload document as `<name>.json` **beside** this manifest. `file`

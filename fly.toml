@@ -74,12 +74,29 @@ primary_region = "iad"
     soft_limit = 25
 
   # Liveness uses the existing legacy endpoint; sprint 1E-A1 adds no /healthz.
+  #
+  # The probe is not a public request. Fly runs a service check against the
+  # service on the Machine over the app's private network, not against this
+  # app's fly.dev name, so the request it would otherwise send carries the
+  # Machine's private address in Host and arrives as plain HTTP. Against the
+  # block above that is a `400 DisallowedHost` (ALLOWED_HOSTS lists names) and
+  # then a `301` from SECURE_SSL_REDIRECT - and a check that is not answered
+  # `200` fails, because Fly does not follow redirects. So the check states the
+  # identity and the scheme itself, which is the documented remedy for both:
+  # `headers` is passed with the check call, and `X-Forwarded-Proto` is the
+  # header SECURE_PROXY_SSL_HEADER already trusts. Neither entry weakens
+  # anything: ALLOWED_HOSTS keeps its exact list, and no path is exempted from
+  # the HTTPS redirect. Do not "simplify" these two headers away - without them
+  # the Machine never goes healthy and is never routed to.
   [[http_service.checks]]
     interval = "15s"
     timeout = "5s"
     grace_period = "10s"
     method = "GET"
     path = "/api/health/"
+    # http is the documented default; stated so the headers below stay correct.
+    protocol = "http"
+    headers = { Host = "sure-tips-api-mate.fly.dev", "X-Forwarded-Proto" = "https" }
 
 # No [[vm]] block and no machine size: the size is a deploy-time choice (and
 # revisited once the real load is known), so this file commits no sizing policy.

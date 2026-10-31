@@ -43,7 +43,10 @@ Ground rules
   no test here may assert an app, a release, a secret or a live response.
 * **``/api/health/`` is the liveness contract.** Sprint 1E-A1 adds no
   ``/healthz``: ``fly.toml`` checks the legacy endpoint, and that route is pinned
-  here instead.
+  here instead. The *request* that check sends is pinned too, because it is not a
+  public request: it arrives over the app's private network, so a host-validated,
+  HTTPS-forcing deployment would answer it ``400`` and then ``301`` unless the
+  check states this app's own host and its scheme.
 * **The published content ships in the image.** The versioned endpoint is served
   from reviewed JSON inside the application package, so the content directory is
   part of the image contract: it may not be excluded from the build context, and
@@ -62,7 +65,7 @@ from importlib import import_module
 from pathlib import Path
 
 from django.conf import settings
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 from django.urls import Resolver404, resolve
 
 from .jsoncontent_v1 import CANONICAL_CONTENT_ROOT
@@ -95,6 +98,11 @@ WORKFLOW_DIR = REPO_ROOT / '.github' / 'workflows'
 CONTENT_ROOT = APP_DIR / 'content' / 'v1'
 SHIPPED_MANIFEST = CONTENT_ROOT / 'manifest.json'
 CONTENT_COPY_INSTRUCTION = 'COPY --chown=appuser:appuser odds/ ./odds/'
+
+# The directory that copy lands in is created by the requirements copy before it,
+# so it stays root-owned until this instruction hands it to the runtime account:
+# only then can the release command create its ephemeral SQLite file there.
+SERVICE_DIR_OWNER_INSTRUCTION = 'RUN chown appuser:appuser /app/odds'
 
 # The liveness route shared by the container, fly.toml's health check and the
 # runbook; the port the image publishes; the WSGI callable its CMD names.
@@ -157,6 +165,31 @@ FLY_REGION = 'iad'
 FLY_HOST = FLY_APP + '.fly.dev'
 FLY_ALLOWED_HOSTS = ','.join([FLY_HOST] + LOCAL_ALLOWED_HOSTS)
 FLY_CREATE_COMMAND = 'fly apps create ' + FLY_APP
+
+# The request the deployed health check sends. A service check is not a public
+# request - Fly runs it against the Machine over the app's private network - so
+# without these two headers Django sees the Machine's private address as ``Host``
+# (``400 DisallowedHost``) and a plain-HTTP request (``301``, which Fly does not
+# follow and counts as a failed check). The check states the identity and the
+# scheme instead of the deployment widening ``ALLOWED_HOSTS`` or exempting a path.
+FLY_CHECK_HEADERS = {'Host': FLY_HOST, 'X-Forwarded-Proto': 'https'}
+FLY_CHECK_PROTOCOL = 'http'
+
+# The body the probe has to receive, as the image smoke workflow pins it too.
+PINNED_HEALTH_BODY = {
+    'status': 'ok',
+    'service': 'sure-tips-api',
+    'api_version': 'legacy',
+}
+
+# The shape of Host a probe would carry if the check named nothing: a private
+# (RFC1918) address and the internal port. It is not an app identity, so it is
+# not a host a deployment may allow.
+PRIVATE_PROBE_HOST = '172.19.16.82:8080'
+
+# The exact hosts a deployment allows, as a list: ``fly.toml`` writes them
+# comma-separated into one environment value.
+FLY_DEPLOYED_HOSTS = [FLY_HOST] + LOCAL_ALLOWED_HOSTS
 
 # The identity spellings this deployment used while its identity was still
 # unresolved. A current-state file that still carries one is still describing a
@@ -478,6 +511,12 @@ class ImageContractTests(SimpleTestCase):
             with self.subTest(token=token):
                 self.assertNotIn(token, self.body)
 
+    def test_the_service_directory_is_owned_by_the_runtime_account(self):
+        # Only the entries a copy --chown names become appuser-owned; the directory
+        # the copy lands in pre-exists it, so without this instruction the release
+        # command cannot create /app/odds/db.sqlite3 and exits 1.
+        self.assertIn(SERVICE_DIR_OWNER_INSTRUCTION, self.instructions)
+
 
 class ShippedContentTests(SimpleTestCase):
     """The image carries the published content the deployed endpoint reads.
@@ -616,6 +655,134 @@ class FlyConfigurationTests(SimpleTestCase):
         for name, expected in FLY_TRANSPORT_POLICY.items():
             with self.subTest(setting=name):
                 self.assertEqual(env[name], expected)
+
+
+class HealthCheckProbeTests(SimpleTestCase):
+    """The deployed check is answered ``200`` - as this app, over HTTPS.
+
+    ``FlyConfigurationTests`` pins the route the check probes; this class pins
+    the *request* it sends and what the deployment does with it. That request is
+    not a public one: Fly runs a service check against the service on the
+    Machine over the app's private network, so the Host it would otherwise carry
+    is the Machine's private address and the scheme is plain HTTP. Against
+    ``ALLOWED_HOSTS`` naming hosts and ``SECURE_SSL_REDIRECT`` forcing HTTPS,
+    that is a ``400`` and then a ``301`` - and Fly counts anything but ``2xx`` as
+    a failed check, so the Machine never goes healthy.
+
+    Both halves are repaired in the check itself, so the repair is what is
+    pinned: the ``headers`` table, and the behaviour those headers produce. The
+    negative requests below are the ones an operator would otherwise be tempted
+    to fix by adding an address to ``ALLOWED_HOSTS`` or by exempting
+    ``/api/health/`` from the redirect; they are here to show why neither is the
+    fix.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        config = tomllib.loads(FLY_CONFIG.read_text(encoding='utf-8'))
+        cls.check = config['http_service']['checks'][0]
+        cls.allowed_hosts = config['env']['ALLOWED_HOSTS'].split(',')
+
+    def test_the_check_sends_this_apps_host_and_never_an_address(self):
+        headers = self.check['headers']
+        self.assertEqual(
+            headers, FLY_CHECK_HEADERS,
+            'the check states both the identity and the scheme; dropping either '
+            'leaves the probe unanswered (400 DisallowedHost, then 301)',
+        )
+        host = headers['Host']
+        self.assertEqual(host, FLY_HOST, 'the probe names this app, nothing else')
+        # A bare host: Django compares the host the request claims, so a scheme,
+        # a port or a path here would be a different, still-disallowed value.
+        for fragment in ('://', ':', '/'):
+            with self.subTest(fragment=fragment):
+                self.assertNotIn(fragment, host)
+        self.assertIn(
+            host, self.allowed_hosts,
+            'the probe Host has to be a host this deployment allows',
+        )
+
+    def test_the_check_announces_the_scheme_trusted_by_the_proxy(self):
+        self.assertEqual(self.check['protocol'], FLY_CHECK_PROTOCOL)
+        header_name, trusted_value = settings.SECURE_PROXY_SSL_HEADER
+        self.assertEqual(header_name, 'HTTP_X_FORWARDED_PROTO')
+        self.assertEqual(
+            self.check['headers']['X-Forwarded-Proto'], trusted_value,
+            'the probe has to announce exactly the scheme SECURE_PROXY_SSL_HEADER '
+            'trusts, or SECURE_SSL_REDIRECT answers it instead of the view',
+        )
+
+    def test_the_check_needs_no_tls_verification_bypass(self):
+        # An HTTPS check against a private address would want tls_skip_verify;
+        # announcing the scheme over HTTP needs neither that nor a server name.
+        for key in ('tls_skip_verify', 'tls_server_name'):
+            with self.subTest(key=key):
+                self.assertNotIn(key, self.check)
+
+    @override_settings(
+        ALLOWED_HOSTS=FLY_DEPLOYED_HOSTS, SECURE_SSL_REDIRECT=True,
+    )
+    def test_a_request_built_from_the_check_headers_is_answered_200(self):
+        # The whole request as the deployment configures it: host validation
+        # passes and the redirect stands down, so the health view answers.
+        response = self.client.get(
+            HEALTH_PATH,
+            HTTP_HOST=self.check['headers']['Host'],
+            HTTP_X_FORWARDED_PROTO=self.check['headers']['X-Forwarded-Proto'],
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), PINNED_HEALTH_BODY)
+
+    @override_settings(
+        ALLOWED_HOSTS=FLY_DEPLOYED_HOSTS, SECURE_SSL_REDIRECT=False,
+    )
+    def test_the_address_a_probe_would_otherwise_name_is_disallowed(self):
+        # The first failure. Allowing this address instead of naming the app
+        # would make ALLOWED_HOSTS describe whatever address a Machine happens
+        # to hold - and Fly documents that a Machine's private address changes.
+        with self.assertLogs('django.security.DisallowedHost', 'ERROR'):
+            response = self.client.get(
+                HEALTH_PATH,
+                HTTP_HOST=PRIVATE_PROBE_HOST,
+                HTTP_X_FORWARDED_PROTO='https',
+            )
+        self.assertEqual(response.status_code, 400)
+
+    @override_settings(
+        ALLOWED_HOSTS=FLY_DEPLOYED_HOSTS, SECURE_SSL_REDIRECT=True,
+    )
+    def test_the_host_header_alone_is_answered_by_the_redirect(self):
+        # The second failure, and why the scheme header is not decoration: with
+        # the host fixed but the request unannounced, SecurityMiddleware answers
+        # 301 and Fly counts that as a failed check.
+        response = self.client.get(HEALTH_PATH, HTTP_HOST=FLY_HOST)
+        self.assertEqual(response.status_code, 301)
+        self.assertEqual(
+            response.headers['Location'],
+            'https://' + FLY_HOST + HEALTH_PATH,
+        )
+
+    @override_settings(
+        ALLOWED_HOSTS=FLY_DEPLOYED_HOSTS, SECURE_SSL_REDIRECT=True,
+    )
+    def test_announcing_https_does_not_admit_an_unlisted_host(self):
+        # Announcing HTTPS skips the redirect, so CommonMiddleware answers - and
+        # still refuses. That is what makes the header safe to send: it changes
+        # the scheme the deployment sees, not the identity it accepts.
+        with self.assertLogs('django.security.DisallowedHost', 'ERROR'):
+            response = self.client.get(
+                HEALTH_PATH,
+                HTTP_HOST=PRIVATE_PROBE_HOST,
+                HTTP_X_FORWARDED_PROTO='https',
+            )
+        self.assertEqual(response.status_code, 400)
+
+    def test_no_path_is_exempted_from_the_https_redirect(self):
+        # The fix is that the probe identifies itself as HTTPS, not that the
+        # probe's path was carved out of the redirect. An exemption would let a
+        # plain-HTTP request reach a view in the clear.
+        self.assertEqual(list(settings.SECURE_REDIRECT_EXEMPT), [])
 
 
 class EnvExampleTests(SimpleTestCase):

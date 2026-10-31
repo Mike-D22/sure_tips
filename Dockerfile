@@ -42,6 +42,14 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
 # at run time by the platform, never baked into a layer.
 COPY --chown=appuser:appuser odds/ ./odds/
 
+# The destination directory of that copy was created by the requirements copy
+# above, so it is still root-owned: --chown assigns ownership to the entries a
+# COPY copies, not to a destination directory that already existed. Without this
+# line the unprivileged runtime account cannot create the SQLite file Django
+# resolves to /app/odds/db.sqlite3, and the release command exits 1 with
+# "unable to open database file".
+RUN chown appuser:appuser /app/odds
+
 WORKDIR /app/odds
 
 USER appuser

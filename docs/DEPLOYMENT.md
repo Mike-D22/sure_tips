@@ -176,7 +176,19 @@ other app deploys this service under that identity instead of this one.
    Fly's TLS terminator (`force_https = true`). `auto_stop_machines = "off"` keeps
    a machine running: a cold start would otherwise add its boot time to the first
    scrape, which already runs synchronously past gunicorn's default timeout.
-4. Waits for the `[[http_service.checks]]` probe of `/api/health/`.
+4. Waits for the `[[http_service.checks]]` probe of `/api/health/` to answer
+   `200`. The probe is not a public request: Fly runs a service check against the
+   service on the machine **over the app's private network**, so the check itself
+   states the identity and the scheme —
+   `headers = { Host = "sure-tips-api-mate.fly.dev", "X-Forwarded-Proto" = "https" }`.
+   Without the first header Django sees the machine's private address as `Host`
+   and answers `400 DisallowedHost`; without the second the probe arrives as plain
+   HTTP, `SECURE_SSL_REDIRECT` answers `301`, and Fly counts anything but `2xx` as
+   a failed check (it does not follow redirects). Neither header widens
+   `ALLOWED_HOSTS` or exempts a path from the redirect — a plain-HTTP request from
+   anywhere else is still redirected and still cannot claim another host. Leave
+   both in place; `odds/alltips_scraper/tests_deployment_v1.py`
+   (`HealthCheckProbeTests`) fails if either is removed.
 
 Migrations are forward-only: a deploy that migrated and then needed to be undone
 requires a new migration.
@@ -361,7 +373,12 @@ manifest does not name.
   invoke it, and neither it nor anything else writes, refreshes or republishes the
   shipped content. No cache, Redis, Upstash or publication secret was added, and
   preparing a candidate, computing its digest and committing it remain manual and
-  reviewed.
+  reviewed. The mechanical half of that preparation - the record file, the canonical
+  digest and the manifest entry - is written by `manage.py prepare_v1_candidate`
+  (`docs/RUNBOOK.md` section 4.4), which is a reviewer tool for the same reasons: it
+  is not installed as a service, nothing in a build, a release or a request invokes
+  it, it reaches no network, and it publishes nothing until a reviewer commits the
+  prepared files and redeploys.
 * **Forward-only migrations.** The release command migrates; there is no
   rollback beyond a new forward migration.
 * **A committed identity, an uncreated app.** `fly.toml` names `app`
@@ -392,6 +409,8 @@ manifest does not name.
   release-command/admin dependency in the initial deployment scope. **Sprint 1K keeps
   this deferred** (see §1.1): the initial static-v1 scope makes no persistence
   decision, and `/admin/` and session- or auth-dependent paths stay outside it.
+  The image gives the runtime account ownership of `/app/odds`, so the release
+  command can create its ephemeral `db.sqlite3` there.
 * **No `CSRF_TRUSTED_ORIGINS`.** The API is read-only public `GET`s, so no
   browser POST surface needs it yet. A future form or dashboard on the deployed
   origin will.
