@@ -1,6 +1,6 @@
 # your_project/urls.py
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import path
 from alltips_scraper.views import (
     # Original scrapers (keeping your existing ones)
     anytime_goalscorer,
@@ -9,19 +9,15 @@ from alltips_scraper.views import (
     btts_win_accumulator,
     over_25_goals_accumulator,
     both_teams_to_score,
-    # Operational endpoints
-    health,
 )
 
+from customers.views import (
+    contact_us,
+)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-
-    # ==========================================================
-    # Operational endpoint (no scraping, no auth, no secrets)
-    # ==========================================================
-    path('api/health/', health, name='health'),
-
+    
     # ==========================================================
     # Original AllTips Scraper Endpoints
     # ==========================================================
@@ -30,11 +26,9 @@ urlpatterns = [
     path('api/btts-win-accumulator/', btts_win_accumulator, name='btts_win_accumulator'),
     path('api/over-25-goals-accumulator/', over_25_goals_accumulator, name='over_25_goals_accumulator'),
     path('api/BTTS/', both_teams_to_score, name='both_teams_to_score'),
-    path('api/goalscorer/', anytime_goalscorer, name='anytime_goalscorer'),
 
     # ==========================================================
     # Customer Endpoint
     # ==========================================================
-    # path('api/contact-us/', contact_us, name='contact-us'),
-    path('api/v1/', include('alltips_scraper.urls_v1')),
+    path('api/contact-us/', contact_us, name='contact-us'),
 ]
