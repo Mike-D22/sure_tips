@@ -1,0 +1,29 @@
+# fly.toml app configuration file generated for odds-suretips on 2026-11-12T08:48:54-05:00
+#
+# See https://docs.fly.io/reference/configuration for information about how to use this file.
+#
+
+app = 'odds-suretips'
+primary_region = 'iad'
+console_command = '/code/manage.py shell'
+
+[build]
+[env]
+  PORT = '8000'
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '512mb'
+  cpus = 1
+  memory_mb = 512
+
+[[statics]]
+  guest_path = '/code/static'
+  url_prefix = '/static/'
