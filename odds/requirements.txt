@@ -4,7 +4,8 @@ cloudscraper==1.2.71
 Django==6.0.5
 django-cors-headers==4.9.0
 lxml==6.1.1
-python-decouple==3.8
+python-dotenv==1.0.1
 djangorestframework==3.17.1
 django-redis==6.0.0
 redis==7.0.1
+python-decouple==3.8

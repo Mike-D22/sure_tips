@@ -1,14 +1,21 @@
 import asyncio
+import os
+from pathlib import Path
+
 import aiohttp
 import cloudscraper
 from bs4 import BeautifulSoup
 from datetime import datetime
-from decouple import config
+from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import re
 
-API_BASE_URL = config('SCRAPE_URL')
+# Load environment variables from odds/.env (idempotent; settings usually loads
+# this first, but this keeps standalone scraper runs safe too).
+load_dotenv(Path(__file__).resolve().parent.parent / '.env')
+
+API_BASE_URL = os.environ['SCRAPE_URL']
 
 def extract_team_from_style(style_str: str) -> str:
     """Extract team name from background-image URL style."""
