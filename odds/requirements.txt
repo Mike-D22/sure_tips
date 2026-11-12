@@ -1,16 +1,10 @@
-# Pinned runtime dependencies. Every line is an exact pin; nothing is installed
-# from a range.
-#
-# gunicorn is the sprint 1E-A1 addition that still applies: the container serves
-# the app with gunicorn, never `manage.py runserver`. There is deliberately no
-# PostgreSQL driver and no dj-database-url: settings.py does not read
-# DATABASE_URL, so the only database is the local SQLite file and the image needs
-# no database server and no compiler.
 aiohttp==3.13.5
 beautifulsoup4==4.14.3
 cloudscraper==1.2.71
 Django==6.0.5
 django-cors-headers==4.9.0
-gunicorn==26.2.0
 lxml==6.1.1
 python-decouple==3.8
+djangorestframework==3.17.1
+django-redis==6.0.0
+redis==7.0.1
