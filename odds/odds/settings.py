@@ -113,29 +113,24 @@ DATABASES = {
 }
 
 
-# Cache -----------------------------------------------------------------------
-# Redis-backed cache via django-redis, mirroring the 90plus-Tips backend. The
-# `cache_matches` decorator on the scraper views reads from django.core.cache,
-# which this block points at a shared Redis instance instead of the per-process
-# LocMemCache default, so multiple gunicorn workers share one cache.
-REDIS_URL = config("REDIS_URL")
+# REDIS_URL = config("REDIS_URL")
 
-CACHES = {
-    'default': {
-        'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': REDIS_URL,
-        'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-            'SSL': False,
-        },
-        'TIMEOUT': 60 * 15,
-    }
-}
+# CACHES = {
+#     'default': {
+#         'BACKEND': 'django_redis.cache.RedisCache',
+#         'LOCATION': REDIS_URL,
+#         'OPTIONS': {
+#             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+#             'SSL': False,
+#         },
+#         'TIMEOUT': 60 * 15,
+#     }
+# }
 
-# Sessions share the same Redis cache backend.
-SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
-SESSION_CACHE_ALIAS = 'default'
-CACHE_TTL = 60 * 15
+# # Sessions share the same Redis cache backend.
+# SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+# SESSION_CACHE_ALIAS = 'default'
+# CACHE_TTL = 60 * 15
 
 
 # Password validation

@@ -26,7 +26,6 @@ urlpatterns = [
     path('api/btts-win-accumulator/', btts_win_accumulator, name='btts_win_accumulator'),
     path('api/over-25-goals-accumulator/', over_25_goals_accumulator, name='over_25_goals_accumulator'),
     path('api/BTTS/', both_teams_to_score, name='both_teams_to_score'),
-    path('api/goalscorer/', anytime_goalscorer, name='anytime_goalscorer'),
 
     # ==========================================================
     # Customer Endpoint
