@@ -10,9 +10,13 @@ SECRET_KEY = "ou4wx@_!kwf=zu0*85t-m3@-%bd067+@eo0szvr7ko#28n!8j("
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["*"]
+HOST = config('HOST')
+ALLOWED_HOSTS = [HOST, "localhost", "127.0.0.1"]
 
+CSRF_TRUSTED_ORIGINS = [
+    f"https://{HOST}",
 
+]
 # Application definition
 
 INSTALLED_APPS = [
@@ -66,6 +70,7 @@ CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8000",
     # "http://localhost:50083",
+    f"https://{HOST}",
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
